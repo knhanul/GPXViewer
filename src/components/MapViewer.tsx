@@ -5,11 +5,13 @@ import {
   TileLayer,
   Marker,
   Popup,
+  Circle,
   useMap
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { RouteState } from '../types/gpx';
+import type { UserLocation } from '../types/location';
 
 // Leaflet 기본 마커 아이콘 (Vite 환경에서 깨지는 문제) 해결을 위해
 // CDN 의 아이콘 URL 을 명시적으로 지정한다.
@@ -37,6 +39,10 @@ interface MapViewerProps {
   highlightRange?: { startKm: number; endKm: number } | null;
   /** "전체 보기" 트리거 카운트 (값이 바뀌면 fitBounds) */
   fitAllTrigger?: number;
+  /** 사용자 현재 위치 (있으면 마커 표시) */
+  userLocation?: UserLocation | null;
+  /** "내 위치로 이동" 트리거 (값이 바뀌면 flyTo) */
+  panToUserTrigger?: number;
 }
 
 /**
@@ -77,11 +83,26 @@ function PanToRoute({ route }: { route: RouteState | null }) {
   return null;
 }
 
+/** 사용자 위치로 부드럽게 이동 (panToUserTrigger 가 바뀔 때) */
+function PanToUser({ location, trigger }: { location: UserLocation | null; trigger: number }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!location) return;
+    map.flyTo([location.lat, location.lng], Math.max(map.getZoom(), 14), {
+      duration: 0.6
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location?.lat, location?.lng, trigger]);
+  return null;
+}
+
 export function MapViewer({
   routes,
   activeRouteId = null,
   highlightRange = null,
-  fitAllTrigger = 0
+  fitAllTrigger = 0,
+  userLocation = null,
+  panToUserTrigger = 0
 }: MapViewerProps) {
   const defaultCenter: [number, number] = [37.5665, 126.978];
   const defaultZoom = 7;
@@ -219,6 +240,43 @@ export function MapViewer({
 
         <FitBoundsOnRoutes routes={routes} trigger={fitAllTrigger} />
         <PanToRoute route={activeRoute} />
+        <PanToUser location={userLocation ?? null} trigger={panToUserTrigger} />
+
+        {userLocation ? (
+          <>
+            <Circle
+              center={[userLocation.lat, userLocation.lng]}
+              radius={Math.max(15, userLocation.accuracyM)}
+              pathOptions={{
+                color: '#22D3EE',
+                weight: 1,
+                fillColor: '#22D3EE',
+                fillOpacity: 0.1
+              }}
+            />
+            <Marker
+              position={[userLocation.lat, userLocation.lng]}
+              icon={L.divIcon({
+                className: 'user-location-marker',
+                html:
+                  '<div class="user-location-dot"><div class="user-location-pulse"></div><div class="user-location-core"></div></div>',
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              })}
+            >
+              <Popup>
+                <div className="font-mono text-xs">
+                  <div className="mb-1 font-sans text-sm font-semibold">
+                    현재 위치
+                  </div>
+                  <div>lat: {userLocation.lat.toFixed(5)}</div>
+                  <div>lng: {userLocation.lng.toFixed(5)}</div>
+                  <div>±{Math.round(userLocation.accuracyM)}m</div>
+                </div>
+              </Popup>
+            </Marker>
+          </>
+        ) : null}
       </MapContainer>
 
       {routes.length === 0 ? (

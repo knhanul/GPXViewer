@@ -1,0 +1,4 @@
+npm run build
+scp -r .\dist\* root@8.219.243.65:/var/www/gpx-viewer/
+
+root@knbada:/var/www# chown -R www-data:www-data /var/www/gpx-viewer

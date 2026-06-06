@@ -1,5 +1,5 @@
 // 고도/구간 분석 유틸.
-// 누적 거리, 경사도, 상승/하강 고도, 1km 단위 구간화 등을 담당한다.
+// 누적 거리, 경사도, 상승/하강 고도, 1km 단위 구간화, 고도 보정 등을 담당한다.
 
 import type {
   ElevationPoint,
@@ -12,14 +12,12 @@ import type {
 
 /**
  * 인접 좌표 사이의 평면 거리를 km 단위로 근사 계산한다.
- * - turf distance 와 거의 같은 결과 (작은 구간에서는 차이 무시)
- * - 좌표가 [lng, lat, ele?] 형식이라는 점에 주의
  */
 function haversineKm(
   a: [number, number],
   b: [number, number]
 ): number {
-  const R = 6371; // km
+  const R = 6371;
   const toRad = (d: number) => (d * Math.PI) / 180;
   const dLat = toRad(b[1] - a[1]);
   const dLng = toRad(b[0] - a[0]);
@@ -32,74 +30,129 @@ function haversineKm(
 }
 
 /**
+ * 중심 이동평균으로 고도 시계열을 부드럽게 만든다.
+ * - 보정 강도는 windowSize 로 조절 (기본 5)
+ * - 양 끝단은 윈도우에 포함 가능한 범위로 축소
+ * - 원본 길이가 0 이면 빈 배열 반환
+ */
+export function smoothElevationSeries(
+  values: number[],
+  windowSize: number = 5
+): number[] {
+  if (values.length === 0) return [];
+  const w = Math.max(1, Math.floor(windowSize));
+  if (w <= 1) return values.slice();
+  const half = Math.floor(w / 2);
+  const out: number[] = new Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(values.length - 1, i + half);
+    let sum = 0;
+    let count = 0;
+    for (let j = lo; j <= hi; j++) {
+      const v = values[j];
+      if (Number.isFinite(v)) {
+        sum += v;
+        count++;
+      }
+    }
+    out[i] = count > 0 ? sum / count : values[i];
+  }
+  return out;
+}
+
+/**
  * ParsedRoute 의 좌표를 분석용 TrackPoint 배열로 변환한다.
  * - 누적 거리(km)
- * - 인접 세그먼트 경사도(%)
- * - 고도(ele) 가 없으면 0
+ * - 인접 세그먼트 경사도(%) [원본/보정]
+ * - 이동평균으로 보정된 고도(smoothedElevation)
+ * - 고도(ele) 가 없거나 일부만 있으면 0 으로 채우고
+ *   hasElevation=false 면 보정 결과는 원본과 동일하게 둔다.
  */
-export function buildTrackPoints(route: ParsedRoute): TrackPoint[] {
+export function buildTrackPoints(
+  route: ParsedRoute,
+  options: { smoothingWindow?: number } = {}
+): TrackPoint[] {
+  const smoothingWindow = options.smoothingWindow ?? 5;
   const points: TrackPoint[] = [];
   const coords = route.coordinates;
   if (coords.length === 0) return points;
 
+  // 1) 원본 elevation 배열 (ele 가 없거나 NaN 이면 0)
+  const rawElev: number[] = coords.map((c) => {
+    const v = c[2];
+    return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+  });
+
+  // 2) 보정된 고도 (전부 0 이면 보정 효과 없음 → 원본과 동일)
+  const hasAnyElevation = rawElev.some((v) => v !== 0);
+  const smoothed = hasAnyElevation
+    ? smoothElevationSeries(rawElev, smoothingWindow)
+    : rawElev.slice();
+
+  // 3) 누적 거리 + 원본/보정 경사도 계산
   let cumKm = 0;
   for (let i = 0; i < coords.length; i++) {
-    const [lng, lat, ele] = coords[i];
-    const elevation = typeof ele === 'number' ? ele : 0;
+    const [lng, lat] = coords[i];
+    const elevation = rawElev[i];
+    const smoothedElevation = smoothed[i];
 
     let segKm = 0;
     if (i > 0) {
       const prev = coords[i - 1];
-      segKm = haversineKm(
-        [prev[0], prev[1]],
-        [lng, lat]
-      );
+      segKm = haversineKm([prev[0], prev[1]], [lng, lat]);
       cumKm += segKm;
     }
 
-    // 경사도: 인접 거리 > 0 일 때만 계산
-    let grade = 0;
-    if (i > 0) {
-      const prev = coords[i - 1];
-      const prevEle = typeof prev[2] === 'number' ? prev[2] : elevation;
-      const elevDiff = elevation - prevEle;
-      if (segKm > 0) {
-        // % = (Δelev_m / Δdist_m) * 100
-        const distM = segKm * 1000;
-        if (distM > 0) {
-          grade = (elevDiff / distM) * 100;
-          // 합리적 범위로 클램프 (±50%)
-          if (grade > 50) grade = 50;
-          else if (grade < -50) grade = -50;
-        }
-      }
-    }
+    const grade = computeGrade(i, coords, rawElev, segKm);
+    const smoothedGrade = computeGrade(i, coords, smoothed, segKm);
 
     points.push({
       lat,
       lng,
       elevation,
+      smoothedElevation,
       cumulativeDistanceKm: cumKm,
-      gradePercent: grade
+      gradePercent: grade,
+      smoothedGradePercent: smoothedGrade
     });
   }
   return points;
 }
 
+function computeGrade(
+  i: number,
+  _coords: [number, number, number?][],
+  elevSeries: number[],
+  segKm: number
+): number {
+  if (i === 0) return 0;
+  const elevDiff = elevSeries[i] - elevSeries[i - 1];
+  if (segKm <= 0) return 0;
+  const distM = segKm * 1000;
+  if (distM <= 0) return 0;
+  const g = (elevDiff / distM) * 100;
+  if (g > 50) return 50;
+  if (g < -50) return -50;
+  return g;
+}
+
 /**
  * TrackPoint 배열을 Recharts 등에 넘기기 좋은 단순화 형식으로 변환.
+ * - 보정된 고도/경사도를 사용한다.
  */
 export function toElevationPoints(points: TrackPoint[]): ElevationPoint[] {
   return points.map((p) => ({
     distance: p.cumulativeDistanceKm,
-    elevation: p.elevation,
-    gradePercent: p.gradePercent
+    elevation: p.smoothedElevation,
+    gradePercent: p.smoothedGradePercent
   }));
 }
 
 /**
  * 인덱스 범위에 해당하는 TrackPoint 들의 통계를 계산한다.
  * - startIndex > endIndex 면 자동 swap
+ * - 보정된 고도/경사도를 기준으로 산출한다.
  */
 export function computeSelectionStats(
   points: TrackPoint[],
@@ -111,28 +164,16 @@ export function computeSelectionStats(
     selection.startIndex >= points.length ||
     selection.endIndex >= points.length
   ) {
-    return {
-      distanceKm: 0,
-      elevationGainM: 0,
-      elevationLossM: 0,
-      avgGradePercent: 0,
-      maxGradePercent: 0,
-      minElevation: 0,
-      maxElevation: 0
-    };
+    return emptyStats();
   }
   const startIndex = Math.min(selection.startIndex, selection.endIndex);
   const endIndex = Math.max(selection.startIndex, selection.endIndex);
   const slice = points.slice(startIndex, endIndex + 1);
   if (slice.length < 2) {
     return {
-      distanceKm: 0,
-      elevationGainM: 0,
-      elevationLossM: 0,
-      avgGradePercent: 0,
-      maxGradePercent: 0,
-      minElevation: slice[0]?.elevation ?? 0,
-      maxElevation: slice[0]?.elevation ?? 0
+      ...emptyStats(),
+      minElevation: slice[0]?.smoothedElevation ?? 0,
+      maxElevation: slice[0]?.smoothedElevation ?? 0
     };
   }
 
@@ -146,55 +187,86 @@ export function computeSelectionStats(
   let gradeSum = 0;
   let gradeCount = 0;
   let maxAbsGrade = 0;
+  // 오르막 비율(%) - 이동 거리에 대한 상승 거리의 비율
+  let upDistanceKm = 0;
+  let lastUpPoint: TrackPoint | null = null;
+
   for (let i = 1; i < slice.length; i++) {
     const a = slice[i - 1];
     const b = slice[i];
-    const diff = b.elevation - a.elevation;
+    const dKm = Math.max(0, b.cumulativeDistanceKm - a.cumulativeDistanceKm);
+    const diff = b.smoothedElevation - a.smoothedElevation;
     if (Math.abs(diff) >= 0.5) {
-      if (diff > 0) gain += diff;
-      else loss += -diff;
+      if (diff > 0) {
+        gain += diff;
+        if (dKm > 0) {
+          upDistanceKm += dKm;
+          lastUpPoint = b;
+        }
+      } else {
+        loss += -diff;
+      }
     }
-    if (Math.abs(b.gradePercent) > 0) {
-      gradeSum += b.gradePercent;
+    if (Math.abs(b.smoothedGradePercent) > 0) {
+      gradeSum += b.smoothedGradePercent;
       gradeCount++;
-      if (Math.abs(b.gradePercent) > maxAbsGrade) {
-        maxAbsGrade = Math.abs(b.gradePercent);
+      if (Math.abs(b.smoothedGradePercent) > maxAbsGrade) {
+        maxAbsGrade = Math.abs(b.smoothedGradePercent);
       }
     }
   }
+  // 연속 상승만 추적해서 합산 (위 단순 누적은 노이즈가 있을 수 있어,
+  // 보정 고도에서 diff > 0.5 인 인접 구간의 거리만 더한다)
+  // upDistanceKm 자체가 이미 그 합.
+  void lastUpPoint;
+
   const avgGrade = gradeCount > 0 ? gradeSum / gradeCount : 0;
-  const minElev = Math.min(...slice.map((p) => p.elevation));
-  const maxElev = Math.max(...slice.map((p) => p.elevation));
+  const minElev = Math.min(...slice.map((p) => p.smoothedElevation));
+  const maxElev = Math.max(...slice.map((p) => p.smoothedElevation));
+  const upRatio = distanceKm > 0 ? (upDistanceKm / distanceKm) * 100 : 0;
 
   return {
     distanceKm,
     elevationGainM: gain,
     elevationLossM: loss,
     avgGradePercent: avgGrade,
-    maxGradePercent:
-      maxAbsGrade === 0
-        ? 0
-        : // maxAbsGrade 와 부호가 일치하는 실제 grade
-          (() => {
-            let signed = 0;
-            for (let i = 1; i < slice.length; i++) {
-              if (Math.abs(slice[i].gradePercent) === maxAbsGrade) {
-                signed = slice[i].gradePercent;
-                break;
-              }
-            }
-            return signed;
-          })(),
+    maxGradePercent: findSignedMaxGrade(slice, maxAbsGrade),
     minElevation: minElev,
-    maxElevation: maxElev
+    maxElevation: maxElev,
+    upRatioPercent: upRatio
   };
+}
+
+function emptyStats(): SegmentStats {
+  return {
+    distanceKm: 0,
+    elevationGainM: 0,
+    elevationLossM: 0,
+    avgGradePercent: 0,
+    maxGradePercent: 0,
+    minElevation: 0,
+    maxElevation: 0,
+    upRatioPercent: 0
+  };
+}
+
+function findSignedMaxGrade(
+  slice: TrackPoint[],
+  maxAbs: number
+): number {
+  if (maxAbs === 0) return 0;
+  for (let i = 1; i < slice.length; i++) {
+    if (Math.abs(slice[i].smoothedGradePercent) === maxAbs) {
+      return slice[i].smoothedGradePercent;
+    }
+  }
+  return 0;
 }
 
 /**
  * 입력 배열을 일정 거리 간격으로 다운샘플링한다.
  * - 시작/종료점은 항상 포함
- * - local min/max (피크/밸리) 도 우선 보존
- * - downsampleThreshold 초과 시 적용
+ * - 보정된 고도 기준의 로컬 extremum 보강
  */
 export function downsampleTrackPoints(
   points: TrackPoint[],
@@ -203,8 +275,6 @@ export function downsampleTrackPoints(
   if (points.length <= targetCount) return points;
   if (targetCount < 4) return points;
 
-  // LTTB (Largest-Triangle-Three-Buckets) 변형:
-  // 단순 균등 샘플링 + 로컬 extremum 보강
   const bucketSize = points.length / (targetCount - 2);
   const result: TrackPoint[] = [points[0]];
 
@@ -214,20 +284,20 @@ export function downsampleTrackPoints(
       bucketStart + 1,
       Math.floor(i * bucketSize) + 1
     );
-    // bucket 내 가장 극단적인 (min or max elevation) 포인트 선택
     let extremeIdx = bucketStart;
-    let extremeVal = points[bucketStart].elevation;
+    let extremeVal = points[bucketStart].smoothedElevation;
     const isAscending =
-      points[bucketStart].elevation < points[Math.min(bucketEnd - 1, points.length - 1)].elevation;
+      points[bucketStart].smoothedElevation <
+      points[Math.min(bucketEnd - 1, points.length - 1)].smoothedElevation;
     for (let j = bucketStart + 1; j < bucketEnd && j < points.length; j++) {
       if (isAscending) {
-        if (points[j].elevation > extremeVal) {
-          extremeVal = points[j].elevation;
+        if (points[j].smoothedElevation > extremeVal) {
+          extremeVal = points[j].smoothedElevation;
           extremeIdx = j;
         }
       } else {
-        if (points[j].elevation < extremeVal) {
-          extremeVal = points[j].elevation;
+        if (points[j].smoothedElevation < extremeVal) {
+          extremeVal = points[j].smoothedElevation;
           extremeIdx = j;
         }
       }
@@ -239,9 +309,9 @@ export function downsampleTrackPoints(
 }
 
 /**
- * 1km (또는 사용자 지정) 단위로 트랙을 구간화한다.
+ * 1km 단위로 트랙을 구간화한다.
  * - segmentLengthKm 기본 1km
- * - 마지막 구간은 짧을 수 있음
+ * - 보정된 고도/경사도 기준
  */
 export function computeSegments(
   points: TrackPoint[],
@@ -259,7 +329,6 @@ export function computeSegments(
       segmentLengthKm;
     if (!reached) continue;
 
-    // 구간 확정 (segStartIdx ~ i)
     segments.push(
       buildSegment(points, segStartIdx, i, `seg-${segNumber}`, segmentLengthKm)
     );
@@ -267,7 +336,6 @@ export function computeSegments(
     segStartIdx = i;
   }
 
-  // 남은 잔여 구간
   if (segStartIdx < points.length - 1) {
     segments.push(
       buildSegment(
@@ -304,17 +372,17 @@ function buildSegment(
   for (let i = 1; i < slice.length; i++) {
     const a = slice[i - 1];
     const b = slice[i];
-    const diff = b.elevation - a.elevation;
+    const diff = b.smoothedElevation - a.smoothedElevation;
     if (Math.abs(diff) >= 0.5) {
       if (diff > 0) gain += diff;
       else loss += -diff;
     }
-    if (Math.abs(b.gradePercent) > 0) {
-      gradeSum += b.gradePercent;
+    if (Math.abs(b.smoothedGradePercent) > 0) {
+      gradeSum += b.smoothedGradePercent;
       gradeCount++;
-      if (Math.abs(b.gradePercent) > maxAbsGrade) {
-        maxAbsGrade = Math.abs(b.gradePercent);
-        signedMaxGrade = b.gradePercent;
+      if (Math.abs(b.smoothedGradePercent) > maxAbsGrade) {
+        maxAbsGrade = Math.abs(b.smoothedGradePercent);
+        signedMaxGrade = b.smoothedGradePercent;
       }
     }
   }
@@ -344,13 +412,7 @@ function buildSegment(
   };
 }
 
-/**
- * 경사도에 따른 색상 (다크 테마).
- * - 강한 상승: 진한 오렌지
- * - 약한 상승: 연한 오렌지
- * - 평지: 회색
- * - 하강: 시안
- */
+/** 경사도에 따른 색상 (다크 테마) */
 export function gradeColor(grade: number): string {
   if (grade >= 8) return '#F97316';
   if (grade >= 4) return '#FB923C';
@@ -361,9 +423,7 @@ export function gradeColor(grade: number): string {
   return '#0891B2';
 }
 
-/**
- * 경사도/거리를 사람이 읽기 좋은 문자열로.
- */
+/** 경사도/거리를 사람이 읽기 좋은 문자열로 */
 export function formatGrade(grade: number): string {
   if (Math.abs(grade) < 0.1) return '0%';
   const sign = grade > 0 ? '+' : '';

@@ -49,14 +49,22 @@ export interface RouteCollection {
 export interface TrackPoint {
   lat: number;
   lng: number;
+  /** 원본 고도 (GPX 그대로) */
   elevation: number;
+  /** 이동평균으로 보정된 고도 (없으면 원본) */
+  smoothedElevation: number;
   cumulativeDistanceKm: number;
+  /** 인접 세그먼트 원본 경사도(%) */
   gradePercent: number;
+  /** 보정 고도 기준 경사도(%) */
+  smoothedGradePercent: number;
 }
 
 export interface ElevationPoint {
   distance: number;
+  /** 보정된 고도 (차트 표시용) */
   elevation: number;
+  /** 보정 경사도 */
   gradePercent: number;
 }
 
@@ -88,6 +96,8 @@ export interface SegmentStats {
   maxGradePercent: number;
   minElevation: number;
   maxElevation: number;
+  /** 오르막 거리 비율 (%) - 구간 거리 중 상승 구간이 차지하는 비율 */
+  upRatioPercent: number;
 }
 
 // ===========================================================================
@@ -156,6 +166,12 @@ export interface RouteCompareRow {
   difficultyLabel: string;
   /** 한 줄 해석 문장 */
   interpretation: string;
+  /** 오르막 관련 요약 (없으면 0/null) */
+  climbCount: number;
+  climbTotalDistanceKm: number;
+  climbTotalGainM: number;
+  climbLongestDistanceKm: number;
+  climbHardestAvgGradePercent: number;
 }
 
 /** 공통 km 구간에 대한 경로별 비교 결과 */

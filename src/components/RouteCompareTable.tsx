@@ -1,4 +1,4 @@
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Info } from 'lucide-react';
 import { formatDistanceKm } from '../utils/routeUtils';
 import { formatGrade } from '../utils/elevationUtils';
 import { DIFFICULTY_COLOR } from '../utils/segmentUtils';
@@ -7,6 +7,8 @@ import type { RouteCompareRow } from '../types/gpx';
 interface RouteCompareTableProps {
   rows: RouteCompareRow[];
   onToggleVisible?: (id: string) => void;
+  /** 다중 경로 비교 요약 (선택) */
+  multiSummary?: string;
 }
 
 /**
@@ -14,7 +16,7 @@ interface RouteCompareTableProps {
  * - 모바일: 가로 스크롤 (overflow-x-auto)
  * - 각 행 첫 열은 색상 칩 + 경로명 + 표시 토글 버튼
  */
-export function RouteCompareTable({ rows, onToggleVisible }: RouteCompareTableProps) {
+export function RouteCompareTable({ rows, onToggleVisible, multiSummary }: RouteCompareTableProps) {
   if (rows.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-white/10 bg-ink-700/40 p-4 text-xs text-zinc-500">
@@ -81,6 +83,42 @@ export function RouteCompareTable({ rows, onToggleVisible }: RouteCompareTablePr
       render: (r) => formatGrade(r.maxGradePercent)
     },
     {
+      label: '주요 오르막',
+      key: 'climbCount',
+      render: (r) => (r.climbCount > 0 ? `${r.climbCount}개` : '없음'),
+      highlight: true
+    },
+    {
+      label: '총 오르막 거리',
+      key: 'climbTotalDistanceKm',
+      render: (r) =>
+        r.climbTotalDistanceKm > 0
+          ? `${r.climbTotalDistanceKm.toFixed(1)} km`
+          : '–'
+    },
+    {
+      label: '오르막 누적 상승',
+      key: 'climbTotalGainM',
+      render: (r) => (r.climbTotalGainM > 0 ? `${Math.round(r.climbTotalGainM)} m` : '–')
+    },
+    {
+      label: '가장 긴 오르막',
+      key: 'climbLongestDistanceKm',
+      render: (r) =>
+        r.climbLongestDistanceKm > 0
+          ? `${r.climbLongestDistanceKm.toFixed(1)} km`
+          : '–'
+    },
+    {
+      label: '가장 힘든 오르막 경사',
+      key: 'climbHardestAvgGradePercent',
+      render: (r) =>
+        r.climbHardestAvgGradePercent > 0
+          ? formatGrade(r.climbHardestAvgGradePercent)
+          : '–',
+      highlight: true
+    },
+    {
       label: '난이도',
       key: 'difficulty',
       render: (r) => (
@@ -100,7 +138,14 @@ export function RouteCompareTable({ rows, onToggleVisible }: RouteCompareTablePr
   ];
 
   return (
-    <div className="overflow-x-auto rounded-2xl border border-white/10 bg-ink-700/60">
+    <div className="flex flex-col gap-2">
+      {multiSummary && rows.length >= 2 ? (
+        <div className="flex items-start gap-2 rounded-xl border border-white/10 bg-ink-700/40 px-3 py-2 text-xs text-zinc-200">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" aria-hidden />
+          <p className="leading-relaxed">{multiSummary}</p>
+        </div>
+      ) : null}
+      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-ink-700/60">
       <table className="min-w-full border-collapse text-sm">
         <thead>
           <tr className="bg-ink-800/70 text-left text-[11px] uppercase tracking-wider text-zinc-400">
@@ -178,6 +223,7 @@ export function RouteCompareTable({ rows, onToggleVisible }: RouteCompareTablePr
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

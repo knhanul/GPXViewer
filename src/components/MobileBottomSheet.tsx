@@ -1,5 +1,18 @@
+// 모바일 하단 시트.
+// - 4개 탭: 경로 / 비교 / 차트 / 구간
+// - 상단에 "주행 모드" 토글 (활성화 시 시트 내용이 RideModePanel 로 바뀜)
+// - 보정된 고도/경사도와 오르막 선택/위치 상태를 모두 부모(App) 로부터 받는다.
+
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, Mountain, ListOrdered, BarChart3, GitCompareArrows, TrendingUp } from 'lucide-react';
+import {
+  ChevronUp,
+  Mountain,
+  ListOrdered,
+  BarChart3,
+  GitCompareArrows,
+  TrendingUp,
+  Bike
+} from 'lucide-react';
 import type {
   ComparisonSelection,
   RouteCompareRow,
@@ -10,6 +23,8 @@ import type {
   SegmentStats,
   TrackPoint
 } from '../types/gpx';
+import type { RouteClimb } from '../types/climb';
+import type { LocationState, UserLocation } from '../types/location';
 import { ElevationProfile } from './ElevationProfile';
 import { SegmentList } from './SegmentList';
 import { SegmentSummary } from './SegmentSummary';
@@ -17,6 +32,9 @@ import { RouteListPanel } from './RouteListPanel';
 import { RouteCompareTable } from './RouteCompareTable';
 import { MultiElevationProfile } from './MultiElevationProfile';
 import { SegmentComparePanel } from './SegmentComparePanel';
+import { ClimbList } from './ClimbList';
+import { RideModePanel } from './RideModePanel';
+import { LocationStatus } from './LocationStatus';
 import type { ElevationPoint } from '../types/gpx';
 
 type SheetState = 'peek' | 'expanded';
@@ -45,6 +63,21 @@ interface MobileBottomSheetProps {
   segmentCompareRows: RouteSegmentCompareRow[];
   /** 경로별 비교표 (12개 지표) */
   compareRows: RouteCompareRow[];
+  /** 다중 경로 비교 요약 (선택) */
+  multiSummary?: string;
+  /** 클라이밍(오르막) 관련 */
+  climbs: RouteClimb[];
+  activeClimbId: string | null;
+  onSelectClimb: (climb: RouteClimb) => void;
+  /** 현재 위치 관련 */
+  locationState: LocationState;
+  onRequestLocation: () => void;
+  onResetLocation: () => void;
+  offRouteMeters: number | null;
+  /** "내 위치로 이동" 트리거 */
+  panToUserTrigger: number;
+  /** 사용자 위치 (지도에 마커 표시용) */
+  userLocation: UserLocation | null;
 }
 
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
@@ -65,10 +98,20 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     comparison,
     onComparisonChange,
     segmentCompareRows,
-    compareRows
+    compareRows,
+    multiSummary,
+    climbs,
+    activeClimbId,
+    onSelectClimb,
+    locationState,
+    onRequestLocation,
+    onResetLocation,
+    offRouteMeters,
+    userLocation
   } = props;
   const [state, setState] = useState<SheetState>('peek');
   const [tab, setTab] = useState<SheetTab>('routes');
+  const [rideMode, setRideMode] = useState(false);
   const dragStartY = useRef<number | null>(null);
 
   const activeRoute = useMemo(
@@ -86,15 +129,50 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
   }, [routes.length]);
 
   const onPointerDown: React.PointerEventHandler<HTMLDivElement> = (e) => {
+    if (rideMode) return;
     dragStartY.current = e.clientY;
   };
   const onPointerUp: React.PointerEventHandler<HTMLDivElement> = (e) => {
+    if (rideMode) return;
     if (dragStartY.current == null) return;
     const dy = e.clientY - dragStartY.current;
     if (dy < -40) setState('expanded');
     else if (dy > 40) setState('peek');
     dragStartY.current = null;
   };
+
+  // ===== 주행 모드 =====
+  if (rideMode) {
+    return (
+      <div
+        className={[
+          'bottom-sheet ride-mode-sheet',
+          'fixed inset-0 z-40 flex flex-col',
+          'bg-ink-800/95 backdrop-blur'
+        ].join(' ')}
+        role="dialog"
+        aria-label="주행 모드"
+      >
+        <div
+          className="h-1.5 w-full bg-ink-700/60"
+          style={{
+            paddingTop: 'max(env(safe-area-inset-top), 0px)'
+          }}
+        />
+        <RideModePanel
+          activeRoute={activeRoute}
+          climbs={climbs}
+          activeClimbId={activeClimbId}
+          locationState={locationState}
+          offRouteMeters={offRouteMeters}
+          onRequestLocation={onRequestLocation}
+          onResetLocation={onResetLocation}
+          onSelectClimb={onSelectClimb}
+          onExit={() => setRideMode(false)}
+        />
+      </div>
+    );
+  }
 
   const heightClass =
     state === 'expanded' ? 'h-[84vh]' : 'h-[36vh] min-h-[200px]';
@@ -134,7 +212,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
       </div>
 
       <div className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2">
-        <div role="tablist" className="flex items-center gap-1">
+        <div role="tablist" className="flex items-center gap-1 overflow-x-auto">
           <TabButton
             active={tab === 'routes'}
             onClick={() => setTab('routes')}
@@ -164,26 +242,37 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
             </>
           ) : null}
         </div>
-        <button
-          type="button"
-          onClick={() =>
-            setState((s) => (s === 'expanded' ? 'peek' : 'expanded'))
-          }
-          className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-300 transition hover:bg-white/5 active:scale-95"
-          aria-label={state === 'expanded' ? '패널 접기' : '패널 펼치기'}
-        >
-          <ChevronUp
-            className={[
-              'h-4 w-4 transition-transform duration-300',
-              state === 'expanded' ? 'rotate-180' : ''
-            ].join(' ')}
-          />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {routes.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setRideMode(true)}
+              className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 px-2.5 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 active:scale-95"
+              aria-label="주행 모드 열기"
+            >
+              <Bike className="h-3.5 w-3.5" />
+              주행 모드
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() =>
+              setState((s) => (s === 'expanded' ? 'peek' : 'expanded'))
+            }
+            className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-300 transition hover:bg-white/5 active:scale-95"
+            aria-label={state === 'expanded' ? '패널 접기' : '패널 펼치기'}
+          >
+            <ChevronUp
+              className={[
+                'h-4 w-4 transition-transform duration-300',
+                state === 'expanded' ? 'rotate-180' : ''
+              ].join(' ')}
+            />
+          </button>
+        </div>
       </div>
 
-      <div
-        className="flex-1 overflow-y-auto px-2 pb-[max(env(safe-area-inset-bottom),12px)]"
-      >
+      <div className="flex-1 overflow-y-auto px-2 pb-[max(env(safe-area-inset-bottom),12px)]">
         {tab === 'routes' ? (
           <div className="space-y-3">
             <RouteListPanel
@@ -222,18 +311,35 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
                   selection={selection}
                   stats={selectionStats}
                   trackPoints={trackPoints}
+                  routeName={activeRoute.name}
                 />
-                <SegmentList
-                  segments={activeRoute.segments}
-                  selection={selection}
-                  onSelect={(seg) =>
-                    onSelectionChange({
-                      startIndex: seg.startIndex,
-                      endIndex: seg.endIndex
-                    })
-                  }
-                  maxHeightPx={window.innerHeight * 0.4}
-                />
+                <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+                  <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                    주요 오르막
+                  </p>
+                  <ClimbList
+                    climbs={climbs}
+                    activeClimbId={activeClimbId}
+                    onSelectClimb={onSelectClimb}
+                    maxHeightPx={Math.min(window.innerHeight * 0.4, 320)}
+                  />
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+                  <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                    구간 리스트
+                  </p>
+                  <SegmentList
+                    segments={activeRoute.segments}
+                    selection={selection}
+                    onSelect={(seg) =>
+                      onSelectionChange({
+                        startIndex: seg.startIndex,
+                        endIndex: seg.endIndex
+                      })
+                    }
+                    maxHeightPx={window.innerHeight * 0.4}
+                  />
+                </div>
               </div>
             ) : (
               <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 bg-ink-700/40 p-4 text-xs text-zinc-500">
@@ -246,14 +352,30 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
           <RouteCompareTable
             rows={compareRows}
             onToggleVisible={onToggleVisible}
+            multiSummary={multiSummary}
           />
         ) : tab === 'chart' ? (
-          <MultiElevationProfile
-            routes={routes}
-            highlightRange={comparison}
-            onHighlightChange={onComparisonChange}
-            height={200}
-          />
+          <div className="space-y-2">
+            <MultiElevationProfile
+              routes={routes}
+              highlightRange={comparison}
+              onHighlightChange={onComparisonChange}
+              height={200}
+            />
+            {userLocation ? (
+              <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+                <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                  현재 위치
+                </p>
+                <LocationStatus
+                  state={locationState}
+                  onRequest={onRequestLocation}
+                  onReset={onResetLocation}
+                  offRouteMeters={offRouteMeters}
+                />
+              </div>
+            ) : null}
+          </div>
         ) : (
           <SegmentComparePanel
             routes={routes}

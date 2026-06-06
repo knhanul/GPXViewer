@@ -11,7 +11,10 @@ import { RouteListPanel } from './components/RouteListPanel';
 import { RouteCompareTable } from './components/RouteCompareTable';
 import { MultiElevationProfile } from './components/MultiElevationProfile';
 import { SegmentComparePanel } from './components/SegmentComparePanel';
+import { ClimbList } from './components/ClimbList';
+import { LocationStatus } from './components/LocationStatus';
 import { useIsDesktop } from './hooks/useMediaQuery';
+import { useGeolocation } from './hooks/useGeolocation';
 import {
   buildTrackPoints,
   computeSegments,
@@ -21,9 +24,12 @@ import {
 } from './utils/elevationUtils';
 import {
   buildCompareTable,
+  buildMultiRouteSummary,
   buildSegmentCompare,
   pickNextColor
 } from './utils/segmentUtils';
+import { detectClimbs } from './utils/climbUtils';
+import { distanceToTrackMeters } from './utils/routeDistanceUtils';
 import type {
   ComparisonSelection,
   ElevationPoint,
@@ -34,16 +40,15 @@ import type {
   SegmentSelection,
   TrackPoint
 } from './types/gpx';
+import type { RouteClimb } from './types/climb';
+import { OFF_ROUTE_THRESHOLD_METERS } from './constants/route';
 
 /**
  * GPX 뷰어 메인 앱.
  * - PC (>= 1024px): 좌측 정보 패널 + 우측 지도 + 지도 아래 차트
  * - 모바일/태블릿: 상단 헤더 + 지도 + 하단 정보 시트 (탭 UI)
  *
- * 4차 목표: 여러 GPX 동시 비교 지원.
- * - routes 배열 (1개여도 동일 형식)
- * - activeRouteId 로 활성 경로 지정
- * - comparison 으로 공통 km 구간 비교
+ * 5차 목표: 오르막 자동 탐지, 고도 보정, 선택 구간 요약, 모바일 주행 모드(현재 위치/경로 이탈) 등
  */
 export default function App() {
   const [routes, setRoutes] = useState<RouteState[]>([]);
@@ -55,10 +60,12 @@ export default function App() {
     endKm: 1
   });
   const [fitAllTrigger, setFitAllTrigger] = useState(0);
+  const [panToUserTrigger, setPanToUserTrigger] = useState(0);
+  const [activeClimbId, setActiveClimbId] = useState<RouteId | null>(null);
   const isDesktop = useIsDesktop();
-
-  // 경로 ID 카운터 (재렌더 사이에서 안정적인 ID 생성)
   const idCounterRef = useRef(0);
+  const { state: locationState, request: requestLocation, reset: resetLocation } =
+    useGeolocation();
 
   // ===== 경로 빌드 헬퍼 =====
   const buildRouteState = useCallback(
@@ -74,11 +81,7 @@ export default function App() {
       const segments: RouteSegment[] = computeSegments(trackPoints, 1);
       idCounterRef.current += 1;
       return {
-        id: makeRouteId(
-          parsed,
-          indexHint,
-          idCounterRef.current
-        ),
+        id: makeRouteId(parsed, indexHint, idCounterRef.current),
         name: defaultNameFromFile(parsed.fileName, indexHint),
         color: '#F97316', // 아래에서 자동 할당
         visible: true,
@@ -94,7 +97,6 @@ export default function App() {
   const appendRoutes = useCallback(
     (parsedList: ParsedRoute[], opts: { replace?: boolean } = {}) => {
       if (parsedList.length === 0) return;
-      // 먼저 새 routes 를 만들고, 그 중 첫 번째 ID 를 active 로 사용한다.
       setRoutes((prev) => {
         const usedColors = (opts.replace ? [] : prev).map((r) => r.color);
         const baseIndex = opts.replace ? 0 : prev.length;
@@ -104,7 +106,6 @@ export default function App() {
           usedColors.push(s.color);
           return s;
         });
-        // 첫 번째 새 경로의 ID 를 active 로 지정
         if (next.length > 0 && next[0]) {
           setActiveRouteId((prevActive) => prevActive ?? next[0].id);
         }
@@ -112,6 +113,7 @@ export default function App() {
       });
       setError(null);
       setSelection(null);
+      setActiveClimbId(null);
     },
     [buildRouteState]
   );
@@ -130,7 +132,6 @@ export default function App() {
       if (parsedList.length === 1) {
         appendRoutes(parsedList, { replace: true });
       } else {
-        // 다중 업로드는 누적 (기존 경로는 유지)
         appendRoutes(parsedList, { replace: false });
       }
     },
@@ -144,6 +145,8 @@ export default function App() {
   // ===== 경로 조작 핸들러 =====
   const handleActivate = useCallback((id: RouteId) => {
     setActiveRouteId(id);
+    setActiveClimbId(null);
+    setSelection(null);
   }, []);
 
   const handleToggleVisible = useCallback((id: RouteId) => {
@@ -155,6 +158,7 @@ export default function App() {
   const handleRemove = useCallback((id: RouteId) => {
     setRoutes((prev) => prev.filter((r) => r.id !== id));
     setActiveRouteId((prev) => (prev === id ? null : prev));
+    setActiveClimbId((prev) => (prev === id ? null : prev));
   }, []);
 
   const handleRename = useCallback((id: RouteId, name: string) => {
@@ -171,6 +175,16 @@ export default function App() {
 
   const handleFitAll = useCallback(() => {
     setFitAllTrigger((t) => t + 1);
+  }, []);
+
+  const handleSelectClimb = useCallback((climb: RouteClimb) => {
+    setActiveClimbId(climb.id);
+    setActiveRouteId(climb.routeId);
+    setSelection({ startIndex: climb.startIndex, endIndex: climb.endIndex });
+  }, []);
+
+  const handlePanToUser = useCallback(() => {
+    setPanToUserTrigger((t) => t + 1);
   }, []);
 
   // 모든 경로가 사라지면 active 도 정리
@@ -191,6 +205,7 @@ export default function App() {
       if (e.key === 'Escape') {
         setError(null);
         setSelection(null);
+        setActiveClimbId(null);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -221,14 +236,35 @@ export default function App() {
     [activeTrackPoints, selection]
   );
 
+  // ===== 오르막 (활성 경로 기준) =====
+  const activeClimbs: RouteClimb[] = useMemo(() => {
+    if (!activeRoute) return [];
+    if (!activeRoute.route.hasElevation) return [];
+    return detectClimbs(
+      activeRoute.trackPoints,
+      activeRoute.id,
+      activeRoute.name
+    );
+  }, [activeRoute]);
+
+  // 클라이밍 선택이 사라졌거나 활성 경로가 바뀌면 activeClimbId 정리
+  useEffect(() => {
+    if (activeClimbId && !activeClimbs.some((c) => c.id === activeClimbId)) {
+      setActiveClimbId(null);
+    }
+  }, [activeClimbs, activeClimbId]);
+
   // ===== 비교 데이터 =====
   const compareRows = useMemo(() => buildCompareTable(routes), [routes]);
   const segmentCompareRows = useMemo(
     () => buildSegmentCompare(routes, comparison ?? { startKm: 0, endKm: 1 }),
     [routes, comparison]
   );
+  const multiSummary = useMemo(
+    () => (routes.length >= 2 ? buildMultiRouteSummary(compareRows) : undefined),
+    [routes.length, compareRows]
+  );
 
-  // SegmentComparePanel 은 non-null 만 받는다
   const segmentPanelSelection: ComparisonSelection = useMemo(
     () => comparison ?? { startKm: 0, endKm: 1 },
     [comparison]
@@ -236,6 +272,14 @@ export default function App() {
   const handleSegmentCompareChange = useCallback((s: ComparisonSelection) => {
     setComparison(s);
   }, []);
+
+  // ===== 경로 이탈 거리 =====
+  const offRouteMeters = useMemo<number | null>(() => {
+    if (!locationState.location) return null;
+    if (!activeRoute) return null;
+    if (activeRoute.trackPoints.length === 0) return null;
+    return distanceToTrackMeters(locationState.location, activeRoute.trackPoints);
+  }, [locationState.location, activeRoute]);
 
   return (
     <div className="relative flex h-dvh min-h-[600px] w-full flex-col bg-ink-900 text-zinc-100">
@@ -258,7 +302,7 @@ export default function App() {
             </h1>
             <p className="hidden text-xs text-zinc-400 md:block">
               {routes.length > 0
-                ? `${routes.length}개 경로 비교 중`
+                ? `${routes.length}개 경로 비교 중 · 자전거 라이딩 분석`
                 : '브라우저에서 경로를 시각화하는 미니멀 GPX 리더'}
             </p>
           </div>
@@ -317,6 +361,16 @@ export default function App() {
           onSegmentPanelChange={handleSegmentCompareChange}
           compareRows={compareRows}
           segmentCompareRows={segmentCompareRows}
+          multiSummary={multiSummary}
+          activeClimbs={activeClimbs}
+          activeClimbId={activeClimbId}
+          onSelectClimb={handleSelectClimb}
+          locationState={locationState}
+          onRequestLocation={requestLocation}
+          onResetLocation={resetLocation}
+          onPanToUser={handlePanToUser}
+          panToUserTrigger={panToUserTrigger}
+          offRouteMeters={offRouteMeters}
         />
       ) : (
         <>
@@ -327,6 +381,8 @@ export default function App() {
                 activeRouteId={activeRouteId}
                 highlightRange={comparison}
                 fitAllTrigger={fitAllTrigger}
+                userLocation={locationState.location}
+                panToUserTrigger={panToUserTrigger}
               />
             </section>
           </main>
@@ -348,6 +404,16 @@ export default function App() {
             onComparisonChange={setComparison}
             compareRows={compareRows}
             segmentCompareRows={segmentCompareRows}
+            multiSummary={multiSummary}
+            climbs={activeClimbs}
+            activeClimbId={activeClimbId}
+            onSelectClimb={handleSelectClimb}
+            locationState={locationState}
+            onRequestLocation={requestLocation}
+            onResetLocation={resetLocation}
+            panToUserTrigger={panToUserTrigger}
+            offRouteMeters={offRouteMeters}
+            userLocation={locationState.location}
           />
         </>
       )}
@@ -356,7 +422,7 @@ export default function App() {
 }
 
 // ===========================================================================
-// PC 레이아웃: 좌측 사이드바 + 우측 (지도 위 / 차트 아래)
+// PC 레이아웃
 // ===========================================================================
 
 interface DesktopLayoutProps {
@@ -382,6 +448,16 @@ interface DesktopLayoutProps {
   onSegmentPanelChange: (s: ComparisonSelection) => void;
   compareRows: ReturnType<typeof buildCompareTable>;
   segmentCompareRows: ReturnType<typeof buildSegmentCompare>;
+  multiSummary: string | undefined;
+  activeClimbs: RouteClimb[];
+  activeClimbId: RouteId | null;
+  onSelectClimb: (c: RouteClimb) => void;
+  locationState: ReturnType<typeof useGeolocation>['state'];
+  onRequestLocation: () => void;
+  onResetLocation: () => void;
+  onPanToUser?: () => void;
+  panToUserTrigger: number;
+  offRouteMeters: number | null;
 }
 
 function DesktopLayout(props: DesktopLayoutProps) {
@@ -407,7 +483,16 @@ function DesktopLayout(props: DesktopLayoutProps) {
     segmentPanelSelection,
     onSegmentPanelChange,
     compareRows,
-    segmentCompareRows
+    segmentCompareRows,
+    multiSummary,
+    activeClimbs,
+    activeClimbId,
+    onSelectClimb,
+    locationState,
+    onRequestLocation,
+    onResetLocation,
+    panToUserTrigger,
+    offRouteMeters
   } = props;
 
   return (
@@ -427,14 +512,31 @@ function DesktopLayout(props: DesktopLayoutProps) {
         {activeRoute ? (
           <>
             <RouteInfoPanel route={activeRoute.route} variant="embedded" />
-            <SegmentSummary
-              selection={selection}
-              stats={selectionStats}
-              trackPoints={activeTrackPoints}
-            />
             <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
               <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                구간 리스트
+                선택 구간
+              </p>
+              <SegmentSummary
+                selection={selection}
+                stats={selectionStats}
+                trackPoints={activeTrackPoints}
+                routeName={activeRoute.name}
+              />
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+              <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                주요 오르막
+              </p>
+              <ClimbList
+                climbs={activeClimbs}
+                activeClimbId={activeClimbId}
+                onSelectClimb={onSelectClimb}
+                maxHeightPx={260}
+              />
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+              <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                구간 리스트 (1km)
               </p>
               <SegmentList
                 segments={activeSegments}
@@ -456,7 +558,7 @@ function DesktopLayout(props: DesktopLayoutProps) {
         )}
       </aside>
 
-      {/* 우측: 지도 위 / 비교 / 차트 아래 */}
+      {/* 우측: 지도 + 비교/차트/구간 */}
       <main className="flex flex-1 flex-col gap-3 overflow-hidden">
         <section className="min-h-0 flex-[3]">
           <MapViewer
@@ -464,6 +566,8 @@ function DesktopLayout(props: DesktopLayoutProps) {
             activeRouteId={activeRouteId}
             highlightRange={comparison}
             fitAllTrigger={fitAllTrigger}
+            userLocation={locationState.location}
+            panToUserTrigger={panToUserTrigger}
           />
         </section>
         {routes.length > 1 ? (
@@ -471,6 +575,7 @@ function DesktopLayout(props: DesktopLayoutProps) {
             <RouteCompareTable
               rows={compareRows}
               onToggleVisible={onToggleVisible}
+              multiSummary={multiSummary}
             />
           </section>
         ) : null}
@@ -496,16 +601,27 @@ function DesktopLayout(props: DesktopLayoutProps) {
             />
           )}
         </section>
-        {routes.length > 1 ? (
-          <section className="shrink-0">
+        <section className="shrink-0 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <LocationStatus
+            state={locationState}
+            onRequest={onRequestLocation}
+            onReset={onResetLocation}
+            offRouteMeters={offRouteMeters}
+            offRouteThresholdM={OFF_ROUTE_THRESHOLD_METERS}
+          />
+          {routes.length > 1 ? (
             <SegmentComparePanel
               routes={routes}
               selection={segmentPanelSelection}
               onSelectionChange={onSegmentPanelChange}
               rows={segmentCompareRows}
             />
-          </section>
-        ) : null}
+          ) : (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-ink-700/40 p-3 text-xs text-zinc-500">
+              여러 경로를 업로드하면 공통 km 구간 비교가 표시됩니다.
+            </div>
+          )}
+        </section>
       </main>
     </div>
   );
@@ -522,7 +638,6 @@ function makeRouteId(parsed: ParsedRoute, hint: number, counter: number): RouteI
 
 function defaultNameFromFile(fileName: string, hint: number): string {
   const base = fileName.replace(/\.gpx$/i, '');
-  // hint=0 이고 base 가 비어있지 않으면 그대로 사용
   if (hint === 0 && base) return base || '경로';
   return base || `경로 ${hint + 1}`;
 }
