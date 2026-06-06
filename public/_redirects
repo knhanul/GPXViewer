@@ -1,0 +1,4 @@
+# Netlify SPA fallback
+# 모든 경로를 index.html 로 라우팅 (PWA + 클라이언트 라우팅 대비)
+# /api/*, /_next/* 같은 정적 파일/내부 경로는 자동으로 우선 처리됨
+/*    /index.html   200

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="GPX Viewer Sample" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>북한산 둘레길 (샘플)</name>
+    <desc>GPX 뷰어 테스트용 샘플 트랙</desc>
+    <time>2024-05-12T08:00:00Z</time>
+  </metadata>
+  <trk>
+    <name>북한산 둘레길</name>
+    <trkseg>
+      <trkpt lat="37.6135" lon="126.9920"><ele>234</ele><time>2024-05-12T08:00:00Z</time></trkpt>
+      <trkpt lat="37.6148" lon="126.9935"><ele>248</ele><time>2024-05-12T08:05:00Z</time></trkpt>
+      <trkpt lat="37.6160" lon="126.9950"><ele>265</ele><time>2024-05-12T08:10:00Z</time></trkpt>
+      <trkpt lat="37.6175" lon="126.9968"><ele>288</ele><time>2024-05-12T08:15:00Z</time></trkpt>
+      <trkpt lat="37.6190" lon="126.9985"><ele>305</ele><time>2024-05-12T08:20:00Z</time></trkpt>
+      <trkpt lat="37.6208" lon="127.0005"><ele>332</ele><time>2024-05-12T08:25:00Z</time></trkpt>
+      <trkpt lat="37.6225" lon="127.0025"><ele>356</ele><time>2024-05-12T08:30:00Z</time></trkpt>
+      <trkpt lat="37.6240" lon="127.0040"><ele>378</ele><time>2024-05-12T08:35:00Z</time></trkpt>
+      <trkpt lat="37.6258" lon="127.0058"><ele>402</ele><time>2024-05-12T08:40:00Z</time></trkpt>
+      <trkpt lat="37.6275" lon="127.0075"><ele>421</ele><time>2024-05-12T08:45:00Z</time></trkpt>
+      <trkpt lat="37.6290" lon="127.0088"><ele>438</ele><time>2024-05-12T08:50:00Z</time></trkpt>
+      <trkpt lat="37.6308" lon="127.0102"><ele>452</ele><time>2024-05-12T08:55:00Z</time></trkpt>
+      <trkpt lat="37.6320" lon="127.0110"><ele>465</ele><time>2024-05-12T09:00:00Z</time></trkpt>
+      <trkpt lat="37.6335" lon="127.0120"><ele>478</ele><time>2024-05-12T09:05:00Z</time></trkpt>
+      <trkpt lat="37.6350" lon="127.0128"><ele>489</ele><time>2024-05-12T09:10:00Z</time></trkpt>
+      <trkpt lat="37.6365" lon="127.0135"><ele>498</ele><time>2024-05-12T09:15:00Z</time></trkpt>
+      <trkpt lat="37.6380" lon="127.0142"><ele>510</ele><time>2024-05-12T09:20:00Z</time></trkpt>
+      <trkpt lat="37.6395" lon="127.0148"><ele>522</ele><time>2024-05-12T09:25:00Z</time></trkpt>
+      <trkpt lat="37.6410" lon="127.0152"><ele>535</ele><time>2024-05-12T09:30:00Z</time></trkpt>
+      <trkpt lat="37.6425" lon="127.0155"><ele>548</ele><time>2024-05-12T09:35:00Z</time></trkpt>
+      <trkpt lat="37.6440" lon="127.0155"><ele>560</ele><time>2024-05-12T09:40:00Z</time></trkpt>
+      <trkpt lat="37.6455" lon="127.0152"><ele>572</ele><time>2024-05-12T09:45:00Z</time></trkpt>
+      <trkpt lat="37.6470" lon="127.0148"><ele>585</ele><time>2024-05-12T09:50:00Z</time></trkpt>
+      <trkpt lat="37.6485" lon="127.0140"><ele>598</ele><time>2024-05-12T09:55:00Z</time></trkpt>
+      <trkpt lat="37.6500" lon="127.0130"><ele>610</ele><time>2024-05-12T10:00:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
