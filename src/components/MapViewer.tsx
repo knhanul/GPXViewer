@@ -9,7 +9,7 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import type { ParsedRoute } from '../types/gpx';
+import type { RouteState } from '../types/gpx';
 
 // Leaflet 기본 마커 아이콘 (Vite 환경에서 깨지는 문제) 해결을 위해
 // CDN 의 아이콘 URL 을 명시적으로 지정한다.
@@ -29,72 +29,92 @@ const defaultIcon = L.icon({
 L.Marker.prototype.options.icon = defaultIcon;
 
 interface MapViewerProps {
-  route: ParsedRoute | null;
+  /** 표시할 경로들 */
+  routes: RouteState[];
+  /** 활성 경로 ID (마커/팝업 강조) */
+  activeRouteId?: string | null;
+  /** 공통 km 구간 (있으면 모든 visible 경로에서 강조) */
+  highlightRange?: { startKm: number; endKm: number } | null;
+  /** "전체 보기" 트리거 카운트 (값이 바뀌면 fitBounds) */
+  fitAllTrigger?: number;
 }
 
 /**
- * 라우트가 바뀌면 자동으로 fitBounds 한다.
- * MapContainer 의 자식으로 사용되어 useMap 훅에 접근한다.
+ * visible 경로 전체의 bounds 로 fitBounds 한다.
  */
-function FitBoundsOnRoute({ route }: { route: ParsedRoute | null }) {
+function FitBoundsOnRoutes({ routes, trigger }: { routes: RouteState[]; trigger: number }) {
   const map = useMap();
 
   useEffect(() => {
-    if (!route) return;
-    const [[south, west], [north, east]] = route.bounds;
-    const bounds = L.latLngBounds(
-      [south, west],
-      [north, east]
-    );
-    // 경로가 한 점에 가까울 경우 너무 좁아지지 않도록 padding 과 maxZoom 설정
-    map.fitBounds(bounds, {
-      padding: [40, 40],
-      maxZoom: 16
-    });
-  }, [map, route]);
+    if (routes.length === 0) return;
+    const bounds = L.latLngBounds([]);
+    for (const s of routes) {
+      if (!s.visible) continue;
+      const [[sLat, sLng], [nLat, eLng]] = s.route.bounds;
+      bounds.extend([sLat, sLng]);
+      bounds.extend([nLat, eLng]);
+    }
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, trigger, routes.length, routes.map((r) => r.id).join(',')]);
 
   return null;
 }
 
 /**
- * Leaflet 기반 지도 뷰어.
- * - OpenStreetMap 타일 사용 (운영 환경에서는 타일 제공 정책 확인 필요)
- * - 라우트가 있을 때 Polyline, 시작/종료 마커 표시
- * - 라우트 변경 시 자동 fitBounds
- * - 모바일에서 pinch-zoom, tap 활성화
+ * 특정 경로 1개의 bounds 로 부드럽게 이동 (활성 경로 변경 시).
  */
-export function MapViewer({ route }: MapViewerProps) {
-  // 빈 상태에서는 한국 중심 (서울) 으로 초기 뷰를 잡는다.
+function PanToRoute({ route }: { route: RouteState | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!route || !route.visible) return;
+    const [[sLat, sLng], [nLat, eLng]] = route.route.bounds;
+    const bounds = L.latLngBounds([sLat, sLng], [nLat, eLng]);
+    map.flyToBounds(bounds, { padding: [60, 60], maxZoom: 16, duration: 0.6 });
+  }, [map, route?.id, route?.visible]);
+  return null;
+}
+
+export function MapViewer({
+  routes,
+  activeRouteId = null,
+  highlightRange = null,
+  fitAllTrigger = 0
+}: MapViewerProps) {
   const defaultCenter: [number, number] = [37.5665, 126.978];
   const defaultZoom = 7;
 
-  // polyline 의 positions 는 Leaflet 형식 [lat, lng] 이다.
-  const polylinePositions = useMemo<[number, number][]>(() => {
-    if (!route) return [];
-    return route.coordinates.map(([lng, lat]) => [lat, lng]);
-  }, [route]);
-
-  const startIcon = useMemo(
-    () =>
-      L.divIcon({
-        className: 'route-marker',
-        html: `<div class="route-marker-dot route-marker-start" title="시작"></div>`,
-        iconSize: [22, 22],
-        iconAnchor: [11, 11]
-      }),
-    []
+  const visibleRoutes = useMemo(
+    () => routes.filter((r) => r.visible),
+    [routes]
   );
 
-  const endIcon = useMemo(
-    () =>
-      L.divIcon({
-        className: 'route-marker',
-        html: `<div class="route-marker-dot route-marker-end" title="종료"></div>`,
-        iconSize: [22, 22],
-        iconAnchor: [11, 11]
-      }),
-    []
+  const activeRoute = useMemo(
+    () => routes.find((r) => r.id === activeRouteId) ?? null,
+    [routes, activeRouteId]
   );
+
+  // 공통 하이라이트 구간 → 각 경로별 좌표 슬라이스
+  const highlightLines = useMemo(() => {
+    if (!highlightRange) return [];
+    const { startKm, endKm } = highlightRange;
+    const lo = Math.max(0, Math.min(startKm, endKm));
+    const hi = Math.max(lo, Math.max(startKm, endKm));
+    return visibleRoutes
+      .map((state) => {
+        const sIdx = findClosestIndex(state.trackPoints, lo);
+        const eIdx = findClosestIndex(state.trackPoints, hi);
+        if (sIdx === eIdx) return null;
+        const positions = state.route.coordinates
+          .slice(sIdx, eIdx + 1)
+          .map((c) => [c[1], c[0]] as [number, number]);
+        if (positions.length < 2) return null;
+        return { id: state.id, color: state.color, positions };
+      })
+      .filter((x): x is { id: string; color: string; positions: [number, number][] } => x !== null);
+  }, [visibleRoutes, highlightRange]);
 
   return (
     <div className="map-shell relative h-full w-full overflow-hidden rounded-2xl border border-white/10 bg-ink-700">
@@ -107,58 +127,101 @@ export function MapViewer({ route }: MapViewerProps) {
         className="h-full w-full"
         style={{ background: '#0F1419' }}
       >
-        {/*
-          운영 환경에서는 OpenStreetMap 타일 사용 정책(https://operations.osmfoundation.org/policies/tiles/)을
-          반드시 확인하고, 상용 서비스에서는 Mapbox/MapTiler/Thunderingforest 등
-          공식 제공자 키를 사용해야 한다.
-        */}
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {route ? (
-          <>
-            <Polyline
-              positions={polylinePositions}
-              pathOptions={{
-                color: '#F97316',
-                weight: 4,
-                opacity: 0.9,
-                lineCap: 'round',
-                lineJoin: 'round'
-              }}
-            />
-            <Marker
-              position={[route.startPoint.lat, route.startPoint.lng]}
-              icon={startIcon}
-            >
-              <Popup>
-                <div className="font-mono text-xs">
-                  <div className="mb-1 font-sans text-sm font-semibold">시작점</div>
-                  <div>lat: {route.startPoint.lat.toFixed(5)}</div>
-                  <div>lng: {route.startPoint.lng.toFixed(5)}</div>
-                </div>
-              </Popup>
-            </Marker>
-            <Marker
-              position={[route.endPoint.lat, route.endPoint.lng]}
-              icon={endIcon}
-            >
-              <Popup>
-                <div className="font-mono text-xs">
-                  <div className="mb-1 font-sans text-sm font-semibold">종료점</div>
-                  <div>lat: {route.endPoint.lat.toFixed(5)}</div>
-                  <div>lng: {route.endPoint.lng.toFixed(5)}</div>
-                </div>
-              </Popup>
-            </Marker>
-            <FitBoundsOnRoute route={route} />
-          </>
-        ) : null}
+        {visibleRoutes.map((state) => (
+          <Polyline
+            key={state.id}
+            positions={state.route.coordinates.map(
+              (c) => [c[1], c[0]] as [number, number]
+            )}
+            pathOptions={{
+              color: state.color,
+              weight: state.id === activeRouteId ? 5 : 4,
+              opacity: state.id === activeRouteId ? 1 : 0.85,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }}
+          />
+        ))}
+
+        {highlightLines.map((hl) => (
+          <Polyline
+            key={`hl-${hl.id}`}
+            positions={hl.positions}
+            pathOptions={{
+              color: '#FBBF24',
+              weight: 7,
+              opacity: 1,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }}
+          />
+        ))}
+
+        {activeRoute
+          ? (() => {
+              const startIcon = L.divIcon({
+                className: 'route-marker',
+                html: `<div class="route-marker-dot" style="background:${activeRoute.color};color:${activeRoute.color}" title="시작"></div>`,
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              });
+              const endIcon = L.divIcon({
+                className: 'route-marker',
+                html: `<div class="route-marker-dot" style="background:${activeRoute.color};color:${activeRoute.color}" title="종료"></div>`,
+                iconSize: [22, 22],
+                iconAnchor: [11, 11]
+              });
+              return (
+                <>
+                  <Marker
+                    position={[
+                      activeRoute.route.startPoint.lat,
+                      activeRoute.route.startPoint.lng
+                    ]}
+                    icon={startIcon}
+                  >
+                    <Popup>
+                      <div className="font-mono text-xs">
+                        <div className="mb-1 font-sans text-sm font-semibold">
+                          {activeRoute.name} · 시작
+                        </div>
+                        <div>lat: {activeRoute.route.startPoint.lat.toFixed(5)}</div>
+                        <div>lng: {activeRoute.route.startPoint.lng.toFixed(5)}</div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                  <Marker
+                    position={[
+                      activeRoute.route.endPoint.lat,
+                      activeRoute.route.endPoint.lng
+                    ]}
+                    icon={endIcon}
+                  >
+                    <Popup>
+                      <div className="font-mono text-xs">
+                        <div className="mb-1 font-sans text-sm font-semibold">
+                          {activeRoute.name} · 종료
+                        </div>
+                        <div>lat: {activeRoute.route.endPoint.lat.toFixed(5)}</div>
+                        <div>lng: {activeRoute.route.endPoint.lng.toFixed(5)}</div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                </>
+              );
+            })()
+          : null}
+
+        <FitBoundsOnRoutes routes={routes} trigger={fitAllTrigger} />
+        <PanToRoute route={activeRoute} />
       </MapContainer>
 
-      {!route ? (
+      {routes.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink-900/40 px-4">
           <div className="pointer-events-auto max-w-xs rounded-2xl border border-white/10 bg-ink-800/85 px-6 py-5 text-center backdrop-blur">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent/15 text-accent">
@@ -183,11 +246,36 @@ export function MapViewer({ route }: MapViewerProps) {
             </p>
             <p className="mt-2 text-xs leading-relaxed text-zinc-400">
               상단의 <span className="text-accent">GPX 파일 선택</span> 버튼을
-              누르거나, 파일을 이 영역에 끌어다 놓아 시작하세요.
+              눌러 <strong>여러 파일</strong>을 한 번에 비교할 수 있습니다.
             </p>
           </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function findClosestIndex(
+  points: { cumulativeDistanceKm: number }[],
+  km: number
+): number {
+  if (points.length === 0) return 0;
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].cumulativeDistanceKm < km) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo > 0) {
+    const a = points[lo - 1];
+    const b = points[lo];
+    if (
+      Math.abs(a.cumulativeDistanceKm - km) <
+      Math.abs(b.cumulativeDistanceKm - km)
+    ) {
+      return lo - 1;
+    }
+  }
+  return lo;
 }

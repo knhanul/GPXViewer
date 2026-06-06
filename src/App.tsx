@@ -1,50 +1,249 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Mountain, X } from 'lucide-react';
 import { GpxUploader } from './components/GpxUploader';
 import { MapViewer } from './components/MapViewer';
 import { RouteInfoPanel } from './components/RouteInfoPanel';
 import { MobileBottomSheet } from './components/MobileBottomSheet';
+import { ElevationProfile } from './components/ElevationProfile';
+import { SegmentList } from './components/SegmentList';
+import { SegmentSummary } from './components/SegmentSummary';
+import { RouteListPanel } from './components/RouteListPanel';
+import { RouteCompareTable } from './components/RouteCompareTable';
+import { MultiElevationProfile } from './components/MultiElevationProfile';
+import { SegmentComparePanel } from './components/SegmentComparePanel';
 import { useIsDesktop } from './hooks/useMediaQuery';
-import type { ParsedRoute } from './types/gpx';
+import {
+  buildTrackPoints,
+  computeSegments,
+  computeSelectionStats,
+  downsampleTrackPoints,
+  toElevationPoints
+} from './utils/elevationUtils';
+import {
+  buildCompareTable,
+  buildSegmentCompare,
+  pickNextColor
+} from './utils/segmentUtils';
+import type {
+  ComparisonSelection,
+  ElevationPoint,
+  ParsedRoute,
+  RouteId,
+  RouteSegment,
+  RouteState,
+  SegmentSelection,
+  TrackPoint
+} from './types/gpx';
 
 /**
  * GPX 뷰어 메인 앱.
- * - PC (>= 1024px): 좌측 정보 패널 + 우측 지도
- * - 모바일/태블릿: 상단 헤더 + 지도 + 하단 정보 시트
+ * - PC (>= 1024px): 좌측 정보 패널 + 우측 지도 + 지도 아래 차트
+ * - 모바일/태블릿: 상단 헤더 + 지도 + 하단 정보 시트 (탭 UI)
+ *
+ * 4차 목표: 여러 GPX 동시 비교 지원.
+ * - routes 배열 (1개여도 동일 형식)
+ * - activeRouteId 로 활성 경로 지정
+ * - comparison 으로 공통 km 구간 비교
  */
 export default function App() {
-  const [route, setRoute] = useState<ParsedRoute | null>(null);
+  const [routes, setRoutes] = useState<RouteState[]>([]);
+  const [activeRouteId, setActiveRouteId] = useState<RouteId | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<SegmentSelection | null>(null);
+  const [comparison, setComparison] = useState<ComparisonSelection | null>({
+    startKm: 0,
+    endKm: 1
+  });
+  const [fitAllTrigger, setFitAllTrigger] = useState(0);
   const isDesktop = useIsDesktop();
 
-  const handleParsed = useCallback((parsed: ParsedRoute) => {
-    setRoute(parsed);
-    setError(null);
-  }, []);
+  // 경로 ID 카운터 (재렌더 사이에서 안정적인 ID 생성)
+  const idCounterRef = useRef(0);
+
+  // ===== 경로 빌드 헬퍼 =====
+  const buildRouteState = useCallback(
+    (parsed: ParsedRoute, indexHint: number): RouteState => {
+      const trackPoints = buildTrackPoints(parsed);
+      const DOWNSAMPLE_THRESHOLD = 2000;
+      const TARGET = 1500;
+      const ds =
+        trackPoints.length > DOWNSAMPLE_THRESHOLD
+          ? downsampleTrackPoints(trackPoints, TARGET)
+          : trackPoints;
+      const elevationPoints: ElevationPoint[] = toElevationPoints(ds);
+      const segments: RouteSegment[] = computeSegments(trackPoints, 1);
+      idCounterRef.current += 1;
+      return {
+        id: makeRouteId(
+          parsed,
+          indexHint,
+          idCounterRef.current
+        ),
+        name: defaultNameFromFile(parsed.fileName, indexHint),
+        color: '#F97316', // 아래에서 자동 할당
+        visible: true,
+        route: parsed,
+        trackPoints,
+        elevationPoints,
+        segments
+      };
+    },
+    []
+  );
+
+  const appendRoutes = useCallback(
+    (parsedList: ParsedRoute[], opts: { replace?: boolean } = {}) => {
+      if (parsedList.length === 0) return;
+      // 먼저 새 routes 를 만들고, 그 중 첫 번째 ID 를 active 로 사용한다.
+      setRoutes((prev) => {
+        const usedColors = (opts.replace ? [] : prev).map((r) => r.color);
+        const baseIndex = opts.replace ? 0 : prev.length;
+        const next: RouteState[] = parsedList.map((p, i) => {
+          const s = buildRouteState(p, baseIndex + i);
+          s.color = pickNextColor(usedColors);
+          usedColors.push(s.color);
+          return s;
+        });
+        // 첫 번째 새 경로의 ID 를 active 로 지정
+        if (next.length > 0 && next[0]) {
+          setActiveRouteId((prevActive) => prevActive ?? next[0].id);
+        }
+        return opts.replace ? next : [...prev, ...next];
+      });
+      setError(null);
+      setSelection(null);
+    },
+    [buildRouteState]
+  );
+
+  // 단일 파일 업로드 (backward compat)
+  const handleParsed = useCallback(
+    (parsed: ParsedRoute) => {
+      appendRoutes([parsed], { replace: true });
+    },
+    [appendRoutes]
+  );
+
+  // 다중 파일 업로드
+  const handleParsedMany = useCallback(
+    (parsedList: ParsedRoute[]) => {
+      if (parsedList.length === 1) {
+        appendRoutes(parsedList, { replace: true });
+      } else {
+        // 다중 업로드는 누적 (기존 경로는 유지)
+        appendRoutes(parsedList, { replace: false });
+      }
+    },
+    [appendRoutes]
+  );
 
   const handleError = useCallback((message: string) => {
     setError(message);
-    setRoute(null);
   }, []);
 
-  // ESC 키로 에러 닫기
+  // ===== 경로 조작 핸들러 =====
+  const handleActivate = useCallback((id: RouteId) => {
+    setActiveRouteId(id);
+  }, []);
+
+  const handleToggleVisible = useCallback((id: RouteId) => {
+    setRoutes((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, visible: !r.visible } : r))
+    );
+  }, []);
+
+  const handleRemove = useCallback((id: RouteId) => {
+    setRoutes((prev) => prev.filter((r) => r.id !== id));
+    setActiveRouteId((prev) => (prev === id ? null : prev));
+  }, []);
+
+  const handleRename = useCallback((id: RouteId, name: string) => {
+    setRoutes((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, name } : r))
+    );
+  }, []);
+
+  const handleRecolor = useCallback((id: RouteId, color: string) => {
+    setRoutes((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, color } : r))
+    );
+  }, []);
+
+  const handleFitAll = useCallback(() => {
+    setFitAllTrigger((t) => t + 1);
+  }, []);
+
+  // 모든 경로가 사라지면 active 도 정리
+  useEffect(() => {
+    if (routes.length === 0 && activeRouteId !== null) {
+      setActiveRouteId(null);
+    } else if (
+      activeRouteId !== null &&
+      !routes.some((r) => r.id === activeRouteId)
+    ) {
+      setActiveRouteId(routes[0]?.id ?? null);
+    }
+  }, [routes, activeRouteId]);
+
+  // ESC 키로 에러 닫기 / 선택 해제
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setError(null);
+      if (e.key === 'Escape') {
+        setError(null);
+        setSelection(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // ===== 활성 경로 데이터 =====
+  const activeRoute = useMemo(
+    () => routes.find((r) => r.id === activeRouteId) ?? null,
+    [routes, activeRouteId]
+  );
+
+  const activeTrackPoints: TrackPoint[] = useMemo(
+    () => activeRoute?.trackPoints ?? [],
+    [activeRoute]
+  );
+  const activeElevationPoints: ElevationPoint[] = useMemo(
+    () => activeRoute?.elevationPoints ?? [],
+    [activeRoute]
+  );
+  const activeSegments: RouteSegment[] = useMemo(
+    () => activeRoute?.segments ?? [],
+    [activeRoute]
+  );
+
+  const selectionStats = useMemo(
+    () => computeSelectionStats(activeTrackPoints, selection),
+    [activeTrackPoints, selection]
+  );
+
+  // ===== 비교 데이터 =====
+  const compareRows = useMemo(() => buildCompareTable(routes), [routes]);
+  const segmentCompareRows = useMemo(
+    () => buildSegmentCompare(routes, comparison ?? { startKm: 0, endKm: 1 }),
+    [routes, comparison]
+  );
+
+  // SegmentComparePanel 은 non-null 만 받는다
+  const segmentPanelSelection: ComparisonSelection = useMemo(
+    () => comparison ?? { startKm: 0, endKm: 1 },
+    [comparison]
+  );
+  const handleSegmentCompareChange = useCallback((s: ComparisonSelection) => {
+    setComparison(s);
+  }, []);
+
   return (
     <div className="relative flex h-dvh min-h-[600px] w-full flex-col bg-ink-900 text-zinc-100">
-      {/* 배경 분위기를 위한 은은한 그라데이션 */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(249,115,22,0.08),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(34,211,238,0.06),transparent_55%)]"
       />
 
-      {/* Header - 모바일 safe-area 대응 */}
       <header
         className="relative z-20 flex items-center justify-between gap-3 border-b border-white/5 bg-ink-800/70 px-4 py-3 backdrop-blur md:px-6"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}
@@ -58,19 +257,24 @@ export default function App() {
               GPX 뷰어
             </h1>
             <p className="hidden text-xs text-zinc-400 md:block">
-              브라우저에서 경로를 시각화하는 미니멀 GPX 리더
+              {routes.length > 0
+                ? `${routes.length}개 경로 비교 중`
+                : '브라우저에서 경로를 시각화하는 미니멀 GPX 리더'}
             </p>
           </div>
         </div>
 
         <GpxUploader
           onParsed={handleParsed}
+          onParsedMany={handleParsedMany}
           onError={handleError}
-          currentFileName={route?.fileName}
+          multiple
+          currentFileName={
+            routes.length === 1 ? routes[0].route.fileName : undefined
+          }
         />
       </header>
 
-      {/* Error Banner */}
       {error ? (
         <div
           role="alert"
@@ -89,27 +293,236 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Main */}
       {isDesktop ? (
-        <main className="relative z-10 flex flex-1 flex-row gap-4 overflow-hidden p-4">
-          <section className="order-1 h-full w-[340px] shrink-0">
-            <RouteInfoPanel route={route} />
-          </section>
-          <section className="order-2 h-full flex-1">
-            <MapViewer route={route} />
-          </section>
-        </main>
+        <DesktopLayout
+          routes={routes}
+          activeRouteId={activeRouteId}
+          activeRoute={activeRoute}
+          activeTrackPoints={activeTrackPoints}
+          activeElevationPoints={activeElevationPoints}
+          activeSegments={activeSegments}
+          selection={selection}
+          selectionStats={selectionStats}
+          onSelectionChange={setSelection}
+          onActivate={handleActivate}
+          onToggleVisible={handleToggleVisible}
+          onRemove={handleRemove}
+          onRename={handleRename}
+          onRecolor={handleRecolor}
+          onFitAll={handleFitAll}
+          fitAllTrigger={fitAllTrigger}
+          comparison={comparison}
+          onComparisonChange={setComparison}
+          segmentPanelSelection={segmentPanelSelection}
+          onSegmentPanelChange={handleSegmentCompareChange}
+          compareRows={compareRows}
+          segmentCompareRows={segmentCompareRows}
+        />
       ) : (
         <>
-          {/* 모바일/태블릿: 지도가 시트 위로 연장되는 레이아웃 */}
           <main className="relative z-10 flex flex-1 flex-col overflow-hidden p-2 pb-0">
             <section className="h-full min-h-[300px] flex-1">
-              <MapViewer route={route} />
+              <MapViewer
+                routes={routes}
+                activeRouteId={activeRouteId}
+                highlightRange={comparison}
+                fitAllTrigger={fitAllTrigger}
+              />
             </section>
           </main>
-          <MobileBottomSheet route={route} />
+          <MobileBottomSheet
+            routes={routes}
+            activeRouteId={activeRouteId}
+            onActivate={handleActivate}
+            onToggleVisible={handleToggleVisible}
+            onRemove={handleRemove}
+            onRename={handleRename}
+            onRecolor={handleRecolor}
+            onFitAll={handleFitAll}
+            trackPoints={activeTrackPoints}
+            elevationPoints={activeElevationPoints}
+            selection={selection}
+            selectionStats={selectionStats}
+            onSelectionChange={setSelection}
+            comparison={comparison}
+            onComparisonChange={setComparison}
+            compareRows={compareRows}
+            segmentCompareRows={segmentCompareRows}
+          />
         </>
       )}
     </div>
   );
+}
+
+// ===========================================================================
+// PC 레이아웃: 좌측 사이드바 + 우측 (지도 위 / 차트 아래)
+// ===========================================================================
+
+interface DesktopLayoutProps {
+  routes: RouteState[];
+  activeRouteId: RouteId | null;
+  activeRoute: RouteState | null;
+  activeTrackPoints: TrackPoint[];
+  activeElevationPoints: ElevationPoint[];
+  activeSegments: RouteSegment[];
+  selection: SegmentSelection | null;
+  selectionStats: ReturnType<typeof computeSelectionStats>;
+  onSelectionChange: (s: SegmentSelection | null) => void;
+  onActivate: (id: RouteId) => void;
+  onToggleVisible: (id: RouteId) => void;
+  onRemove: (id: RouteId) => void;
+  onRename: (id: RouteId, name: string) => void;
+  onRecolor: (id: RouteId, color: string) => void;
+  onFitAll: () => void;
+  fitAllTrigger: number;
+  comparison: ComparisonSelection | null;
+  onComparisonChange: (s: ComparisonSelection | null) => void;
+  segmentPanelSelection: ComparisonSelection;
+  onSegmentPanelChange: (s: ComparisonSelection) => void;
+  compareRows: ReturnType<typeof buildCompareTable>;
+  segmentCompareRows: ReturnType<typeof buildSegmentCompare>;
+}
+
+function DesktopLayout(props: DesktopLayoutProps) {
+  const {
+    routes,
+    activeRouteId,
+    activeRoute,
+    activeTrackPoints,
+    activeElevationPoints,
+    activeSegments,
+    selection,
+    selectionStats,
+    onSelectionChange,
+    onActivate,
+    onToggleVisible,
+    onRemove,
+    onRename,
+    onRecolor,
+    onFitAll,
+    fitAllTrigger,
+    comparison,
+    onComparisonChange,
+    segmentPanelSelection,
+    onSegmentPanelChange,
+    compareRows,
+    segmentCompareRows
+  } = props;
+
+  return (
+    <div className="relative z-10 flex flex-1 gap-3 overflow-hidden p-3">
+      {/* 좌측 사이드바 */}
+      <aside className="flex w-[360px] shrink-0 flex-col gap-3 overflow-y-auto pr-1">
+        <RouteListPanel
+          routes={routes}
+          activeRouteId={activeRouteId}
+          onActivate={onActivate}
+          onToggleVisible={onToggleVisible}
+          onRemove={onRemove}
+          onRename={onRename}
+          onRecolor={onRecolor}
+          onFitAll={onFitAll}
+        />
+        {activeRoute ? (
+          <>
+            <RouteInfoPanel route={activeRoute.route} variant="embedded" />
+            <SegmentSummary
+              selection={selection}
+              stats={selectionStats}
+              trackPoints={activeTrackPoints}
+            />
+            <div className="rounded-2xl border border-white/10 bg-ink-700/60 p-3">
+              <p className="mb-2 font-display text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                구간 리스트
+              </p>
+              <SegmentList
+                segments={activeSegments}
+                selection={selection}
+                onSelect={(seg) =>
+                  onSelectionChange({
+                    startIndex: seg.startIndex,
+                    endIndex: seg.endIndex
+                  })
+                }
+                maxHeightPx={220}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-white/10 bg-ink-700/40 p-6 text-xs text-zinc-500">
+            <Mountain className="h-4 w-4" /> 경로를 선택하면 분석이 표시됩니다.
+          </div>
+        )}
+      </aside>
+
+      {/* 우측: 지도 위 / 비교 / 차트 아래 */}
+      <main className="flex flex-1 flex-col gap-3 overflow-hidden">
+        <section className="min-h-0 flex-[3]">
+          <MapViewer
+            routes={routes}
+            activeRouteId={activeRouteId}
+            highlightRange={comparison}
+            fitAllTrigger={fitAllTrigger}
+          />
+        </section>
+        {routes.length > 1 ? (
+          <section className="shrink-0">
+            <RouteCompareTable
+              rows={compareRows}
+              onToggleVisible={onToggleVisible}
+            />
+          </section>
+        ) : null}
+        <section className="shrink-0">
+          {routes.length > 1 ? (
+            <MultiElevationProfile
+              routes={routes}
+              highlightRange={comparison}
+              onHighlightChange={onComparisonChange}
+              height={200}
+            />
+          ) : (
+            <ElevationProfile
+              points={activeElevationPoints}
+              selection={selection}
+              trackPoints={activeTrackPoints}
+              onSelectionChange={onSelectionChange}
+              totalDistanceKm={activeRoute?.route.totalDistanceKm ?? 0}
+              minElevation={activeRoute?.route.minElevation ?? 0}
+              maxElevation={activeRoute?.route.maxElevation ?? 0}
+              hasElevation={activeRoute?.route.hasElevation ?? false}
+              height={200}
+            />
+          )}
+        </section>
+        {routes.length > 1 ? (
+          <section className="shrink-0">
+            <SegmentComparePanel
+              routes={routes}
+              selection={segmentPanelSelection}
+              onSelectionChange={onSegmentPanelChange}
+              rows={segmentCompareRows}
+            />
+          </section>
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+// ===========================================================================
+// 헬퍼
+// ===========================================================================
+
+/** 안정적인 route ID 생성. 같은 파일을 두 번 업로드해도 다른 ID 가 된다. */
+function makeRouteId(parsed: ParsedRoute, hint: number, counter: number): RouteId {
+  return `r-${counter}-${hint}-${parsed.fileName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 32)}`;
+}
+
+function defaultNameFromFile(fileName: string, hint: number): string {
+  const base = fileName.replace(/\.gpx$/i, '');
+  // hint=0 이고 base 가 비어있지 않으면 그대로 사용
+  if (hint === 0 && base) return base || '경로';
+  return base || `경로 ${hint + 1}`;
 }

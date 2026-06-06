@@ -59,11 +59,12 @@ function parseXml(text: string): XMLDocument {
  *
  * GPX 는 trkpt / rtept 가 포함될 수 있는데, 본 뷰어에서는
  * 첫 번째 유효한 LineString 을 사용한다.
+ * 좌표는 GeoJSON 표준 [lng, lat, ele?] 형식을 그대로 보존한다.
  */
 function extractLineCoordinates(
   fc: FeatureCollection
-): [number, number][] {
-  const coordinates: [number, number][] = [];
+): [number, number, number?][] {
+  const coordinates: [number, number, number?][] = [];
 
   for (const feature of fc.features as Feature<LineString>[]) {
     if (!feature || !feature.geometry) continue;
@@ -77,7 +78,8 @@ function extractLineCoordinates(
             typeof c[0] === 'number' &&
             typeof c[1] === 'number'
           ) {
-            coordinates.push([c[0], c[1]]);
+            const elev = typeof c[2] === 'number' ? c[2] : undefined;
+            coordinates.push([c[0], c[1], elev]);
           }
         }
         if (coordinates.length > 0) {
@@ -94,7 +96,8 @@ function extractLineCoordinates(
             typeof c[0] === 'number' &&
             typeof c[1] === 'number'
           ) {
-            coordinates.push([c[0], c[1]]);
+            const elev = typeof c[2] === 'number' ? c[2] : undefined;
+            coordinates.push([c[0], c[1], elev]);
           }
         }
       }
