@@ -292,13 +292,16 @@ export default function App() {
         className="relative z-20 flex items-center justify-between gap-3 border-b border-white/5 bg-ink-800/70 px-4 py-3 backdrop-blur md:px-6"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 12px)' }}
       >
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-            <Mountain className="h-5 w-5" aria-hidden />
-          </div>
+        <div className="logo-wrap flex min-w-0 items-center gap-3">
+          <img
+            src="/nuni_logo_v1.0.png"
+            alt="Nuni logo"
+            className="app-logo"
+            draggable={false}
+          />
           <div className="min-w-0">
             <h1 className="font-display text-base font-semibold leading-tight text-zinc-50 md:text-lg">
-              GPX 뷰어
+              nuni gpx뷰어
             </h1>
             <p className="hidden text-xs text-zinc-400 md:block">
               {routes.length > 0

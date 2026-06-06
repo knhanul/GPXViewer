@@ -3,7 +3,13 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vitejs.dev/config/
-export default defineConfig({
+// mode 'android' 일 때는 정적 경로를 상대('./') 로 바꿔
+// Capacitor WebView (https://localhost 스킴) 에서도 자산이 정상 로드되게 한다.
+// 그 외 모드(development / production) 는 기존처럼 절대('/') 경로 유지.
+export default defineConfig(({ mode }) => ({
+  // - 웹 배포(Vercel/Netlify/OSS): '/' 절대경로가 표준
+  // - Android (Capacitor) WebView: './' 상대경로가 안전
+  base: mode === 'android' ? './' : '/',
   plugins: [
     react(),
     // PWA 설정: Workbox 기반 정적 자산 precache + OSM 타일 런타임 캐시.
@@ -11,16 +17,16 @@ export default defineConfig({
       registerType: 'autoUpdate',
       // 정적 자산으로 그대로 복사할 파일들
       includeAssets: [
-        'favicon.svg',
         'favicon-64.png',
         'apple-touch-icon.png',
+        'nuni_logo_v1.0.png',
         'sample-bukhansan.gpx'
       ],
       manifest: {
         id: '/',
-        name: 'GPX 뷰어',
-        short_name: 'GPX 뷰어',
-        description: '브라우저에서 GPX 경로를 시각화하는 미니멀 PWA',
+        name: 'nuni gpx뷰어',
+        short_name: 'nuni gpx뷰어',
+        description: '자전거 라이더를 위한 브라우저 기반 GPX 뷰어. 고도 분석, 오르막 자동 탐지, 다중 경로 비교, 주행 모드를 제공합니다.',
         theme_color: '#0F1419',
         background_color: '#0F1419',
         display: 'standalone',
@@ -31,22 +37,10 @@ export default defineConfig({
         categories: ['sports', 'navigation', 'utilities'],
         icons: [
           {
-            src: 'pwa-192x192.png',
-            sizes: '192x192',
+            src: 'nuni_logo_v1.0.png',
+            sizes: '1254x1254',
             type: 'image/png',
             purpose: 'any'
-          },
-          {
-            src: 'pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any'
-          },
-          {
-            src: 'maskable-icon-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'maskable'
           }
         ]
       },
@@ -105,4 +99,4 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 4173
   }
-})
+}))

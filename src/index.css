@@ -125,6 +125,30 @@ body {
   min-height: 0;
 }
 
+/* nuni 앱 로고 - 잘림 없이 전체가 보이도록 */
+.app-logo {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  display: block;
+  flex-shrink: 0;
+  /* 원형 클립 / 오버플로우 가림 절대 적용하지 않음 */
+}
+.app-logo-wrap,
+.logo-wrap {
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 작은 화면에서 로고가 너무 크지 않도록 살짝 축소 */
+@media (max-width: 480px) {
+  .app-logo {
+    width: 32px;
+    height: 32px;
+  }
+}
+
 /* 사용자 현재 위치 마커 */
 .user-location-marker {
   background: transparent;

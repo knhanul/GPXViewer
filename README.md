@@ -1,7 +1,18 @@
-# GPX Viewer
+# nuni gpx뷰어
 
 자전거 라이더를 위한 브라우저 기반 GPX 뷰어.
 **GPX 파일은 서버로 절대 업로드되지 않으며, 모든 분석은 브라우저 안에서만** 처리됩니다.
+
+## 로고 / 브랜딩
+
+- 공식 이름: **nuni gpx뷰어**
+- 로고: `public/nuni_logo_v1.0.png` (PNG 원본, **SVG 변환하지 않음**)
+  - 브라우저 헤더의 `<img class="app-logo">` 로 표시
+  - favicon, apple-touch-icon, PWA manifest icons 모두 동일 PNG 파일 참조
+- PWA manifest: `vite.config.ts` 의 `manifest.icons` — `purpose: "any"` (maskable 강제하지 않음)
+- 잘림 방지를 위해 `object-fit: contain` + `overflow: visible` 적용
+
+> PNG 파일이 `public/nuni_logo_v1.0.png` 경로에 있어야 한다. 다른 이름/경로로 두면 헤더·favicon·PWA 아이콘이 비어 보이게 된다.
 
 ## 주요 기능
 
@@ -104,6 +115,105 @@ npm run preview
 - OSM 타일은 precache 가 아닌 런타임 캐시
 - 설치 가능한 홈 화면 아이콘은 `public/icons/` 에 포함
 
+## Android 앱 빌드 (Capacitor)
+
+Capacitor 로 **하나의 저장소에서** 웹앱과 Android 앱을 함께 관리한다.
+`npm run build` 결과물(`dist/`)을 앱 내부에 포함해 **자체 웹서버 없이** 실행한다.
+지도 타일(OpenStreetMap)만 인터넷으로 로드되며, GPX 파일은 여전히 앱 내부에서만 처리된다.
+
+### 1) 사전 준비 (호스트 PC)
+
+| 항목 | 권장 |
+|---|---|
+| Node.js | 20 LTS 이상 |
+| JDK | 17 (Temurin / Microsoft OpenJDK) |
+| Android Studio | 최신 안정판 (Hedgehog 이상) |
+| Android SDK | Platform 34, Build-Tools 34.x, Platform-Tools |
+| 환경변수 | `ANDROID_HOME` (또는 `ANDROID_SDK_ROOT`) 가 SDK 경로로 설정 |
+
+> `JAVA_HOME` 이 JDK 17 을 가리키는지 확인. Capacitor 6.x 는 JDK 17 필수.
+
+### 2) 최초 1회 — Android 플랫폼 추가
+
+```bash
+# 의존성 설치 (Capacitor 패키지 포함)
+npm install
+
+# Android 프로젝트 생성. android/ 폴더가 생기고 이후부터는 git 으로 추적한다.
+# (이미 android/ 가 있다면 실행하지 말 것 — 기존 설정이 덮어쓰여진다)
+npm run android:add
+```
+
+생성 후 **권장**:
+- `android/app/src/main/AndroidManifest.xml` 의 `<uses-permission>` 에 다음이 포함되어 있는지 확인
+  ```xml
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+  ```
+  (`cap add android` 시 INTERNET 은 자동 추가됨. 위치 권한은 WebView 의 Geolocation 이 OS 권한 다이얼로그를 띄울 수 있도록 미리 선언한다.)
+- `android/app/src/main/res/values/strings.xml` 의 `<string name="app_name">GPX Viewer</string>` 가 앱 이름과 일치하는지 확인
+- 앱 아이콘은 `android/app/src/main/res/mipmap-*/` 의 기본 Capac 아이콘을 사용 중이라면, 추후 교체
+
+### 3) 빌드 & 동기화
+
+```bash
+# (1) Vite 가 mode 'android' 로 빌드 → dist/ 가 base='./' 로 산출
+# (2) cap sync android → dist/ 를 android/app/src/main/assets/public/ 로 복사
+npm run build:android
+```
+
+수동 동기화가 필요할 때:
+```bash
+npm run android:sync
+```
+
+### 4) Android Studio 에서 열기 / 실행
+
+```bash
+# Android Studio 가 android/ 폴더를 연다
+npm run android:open
+```
+
+또는 CLI 로 바로 디바이스/에뮬레이터에 설치·실행:
+```bash
+npm run android:run
+```
+
+### 5) AAB (Google Play 업로드용) 생성
+
+1. Android Studio → 상단 메뉴 **Build** → **Generate Signed Bundle / APK…**
+2. **Android App Bundle** 선택 → Next
+3. **Create new…** 로 키스토어 생성 (또는 기존 키스토어 선택)
+   - `*.jks` / `*.keystore` / 비밀번호는 **절대 Git 에 커밋하지 말 것** (`.gitignore` 에 등록됨)
+   - 키스토어는 안전한 외부 저장소(1Password, 사내 시크릿 매니저 등) 에 백업
+4. release variant 선택 → Finish
+5. 산출물: `android/app/release/app-release.aab`
+6. Google Play Console → 신규 앱 → **App Bundle 업로드**
+
+### 6) 자주 쓰는 명령 요약
+
+| 명령 | 동작 |
+|---|---|
+| `npm run dev` | 웹 개발 서버 (127.0.0.1:5174) |
+| `npm run build` | 웹 프로덕션 빌드 (`dist/`) |
+| `npm run build:web` | `npm run build` 의 별칭 |
+| `npm run build:android` | Vite `mode=android` 빌드 + `cap sync` |
+| `npm run android:sync` | dist → android 자산 동기화만 |
+| `npm run android:open` | Android Studio 열기 |
+| `npm run android:run` | 디바이스/에뮬레이터에 설치·실행 |
+| `npm run preview` | `dist/` 정적 미리보기 (127.0.0.1:4174) |
+
+### 7) Android 환경에서 알아둘 점
+
+- **자체 웹서버 미사용** — `dist/` 가 `android/app/src/main/assets/public/` 에 그대로 복사되어 앱 내 WebView 에서 `https://localhost` 스킴으로 로드된다.
+- **지도 타일** — OpenStreetMap 타일은 **인터넷 연결이 필요**하다. 오프라인 지도 캐시는 PWA Workbox 런타임 캐시에 일부 저장되지만, 사용 영역 밖의 타일은 새로 받아온다.
+- **GPX 파일** — 사용자가 파일 선택기로 고른 GPX 는 **앱 내부** 에서만 파싱·분석된다. 서버로 업로드하지 않는다. (`@tmcw/togeojson` + 자체 유틸)
+- **현재 위치 / Geolocation** — Android WebView 70+ 에서는 `https://localhost` 스킴에서 Geolocation 이 정상 동작한다. OS 권한 다이얼로그는 WebView 가 자동 표시한다. 네이티브 위치 기능이 필요해질 경우 후속 작업으로 `@capacitor/geolocation` 플러그인 도입을 고려.
+- **파일 선택 (`input type="file"`)** — Capacitor 3+ WebView 에서 정상 동작한다. 시스템 파일 선택 UI 가 뜨며, 별도 플러그인 없이 기존 웹 코드 그대로 사용 가능.
+- **PWA Service Worker** — Android WebView 내에서도 SW 가 등록되며, 일반적으로 무해하다. 만약 업데이트/캐시 충돌이 보이면 후속 작업으로 Capacitor 환경 감지(`@capacitor/core` 의 `Capacitor.isNativePlatform()`) 후 SW 등록을 건너뛰는 가드를 추가할 수 있다.
+- **base 경로** — `vite.config.ts` 가 `mode === 'android'` 일 때만 `base: './'` 로 빌드한다. 웹 빌드는 절대 경로(`'/'`)를 유지하므로 Vercel / Netlify / OSS 배포는 영향 없음.
+
 ## 기술 스택
 
 - React 18 + Vite 5 + TypeScript
@@ -113,6 +223,7 @@ npm run preview
 - @turf/turf (공간 계산)
 - Recharts (고도 차트)
 - vite-plugin-pwa (Workbox 기반 PWA)
+- @capacitor/core / @capacitor/cli / @capacitor/android (Android 네이티브 래핑)
 - lucide-react (아이콘)
 
 ## 데이터 흐름 (요약)

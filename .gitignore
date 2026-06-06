@@ -7,12 +7,14 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies / build output
 node_modules
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
 
-# Editor directories and files
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -25,3 +27,36 @@ dist-ssr
 
 # TypeScript
 *.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Capacitor / Android - 프로젝트 소스는 관리하되 비밀 키와 빌드 산출물은 제외
+# android/ 폴더 자체는 커밋한다 (Android Studio 가 생성하는 메타데이터만 제외)
+android/.gradle/
+android/local.properties
+android/captures/
+android/.idea/
+android/app/build/
+android/app/release/
+android/app/debug/
+android/app/.cxx/
+android/build/
+android/.kotlin/
+android/app/*.jks
+android/app/*.keystore
+
+# 키스토어 (어디에 두든 안전을 위해 전역 제외)
+*.keystore
+*.jks
+keystore.properties
+
+# iOS (향후 추가 대비)
+ios/Pods/
+ios/build/
+ios/App/build/
+
+# Capacitor 가 webDir 복사 시 만들 수 있는 임시 파일
+capacitor-copied/
