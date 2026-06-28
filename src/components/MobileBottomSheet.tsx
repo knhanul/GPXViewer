@@ -25,6 +25,12 @@ import type {
 } from '../types/gpx';
 import type { RouteClimb } from '../types/climb';
 import type { LocationState, UserLocation } from '../types/location';
+import type {
+  RecordingStats,
+  RecordingStatus,
+  RideRecording,
+  RecordingMeta
+} from '../types/recording';
 import { ElevationProfile } from './ElevationProfile';
 import { SegmentList } from './SegmentList';
 import { SegmentSummary } from './SegmentSummary';
@@ -35,6 +41,9 @@ import { SegmentComparePanel } from './SegmentComparePanel';
 import { ClimbList } from './ClimbList';
 import { RideModePanel } from './RideModePanel';
 import { LocationStatus } from './LocationStatus';
+import { RecordingListPanel } from './RecordingListPanel';
+import { RecordingDetailPanel } from './RecordingDetailPanel';
+import { RideRecorderPanel } from './RideRecorderPanel';
 import type { ElevationPoint } from '../types/gpx';
 
 type SheetState = 'peek' | 'expanded';
@@ -78,6 +87,23 @@ interface MobileBottomSheetProps {
   panToUserTrigger: number;
   /** 사용자 위치 (지도에 마커 표시용) */
   userLocation: UserLocation | null;
+  recordings: RecordingMeta[];
+  selectedRecording: RideRecording | null;
+  recordingStatus: RecordingStatus;
+  recordingStats: RecordingStats;
+  recordingError: string | null;
+  recordingSupported: boolean;
+  onStartRecording: () => void | Promise<unknown>;
+  onPauseRecording: () => void | Promise<unknown>;
+  onResumeRecording: () => void | Promise<unknown>;
+  onStopRecording: () => void | Promise<unknown>;
+  onDismissRecordingError: () => void;
+  onSelectRecording: (id: string) => void | Promise<unknown>;
+  onAnalyzeRecording: (id: string) => void | Promise<unknown>;
+  onRemoveRecording: (id: string) => void | Promise<unknown>;
+  onCloseRecordingDetail: () => void;
+  /** 시트 상태 변경 시 호출 — MapViewer invalidateSize 트리거용 */
+  onResizeTrigger?: () => void;
 }
 
 export function MobileBottomSheet(props: MobileBottomSheetProps) {
@@ -107,12 +133,34 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     onRequestLocation,
     onResetLocation,
     offRouteMeters,
-    userLocation
+    userLocation,
+    recordings,
+    selectedRecording,
+    recordingStatus,
+    recordingStats,
+    recordingError,
+    recordingSupported,
+    onStartRecording,
+    onPauseRecording,
+    onResumeRecording,
+    onStopRecording,
+    onDismissRecordingError,
+    onSelectRecording,
+    onAnalyzeRecording,
+    onRemoveRecording,
+    onCloseRecordingDetail,
+    onResizeTrigger
   } = props;
   const [state, setState] = useState<SheetState>('peek');
   const [tab, setTab] = useState<SheetTab>('routes');
   const [rideMode, setRideMode] = useState(false);
   const dragStartY = useRef<number | null>(null);
+
+  // 시트 상태(peek/expanded/rideMode) 가 바뀌면 부모에 알려 MapViewer 가
+  // invalidateSize() 를 호출하도록 트리거한다.
+  useEffect(() => {
+    onResizeTrigger?.();
+  }, [state, rideMode, onResizeTrigger]);
 
   const activeRoute = useMemo(
     () => routes.find((r) => r.id === activeRouteId) ?? null,
@@ -147,7 +195,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
       <div
         className={[
           'bottom-sheet ride-mode-sheet',
-          'fixed inset-0 z-40 flex flex-col',
+          'absolute inset-0 z-40 flex flex-col',
           'bg-ink-800/95 backdrop-blur'
         ].join(' ')}
         role="dialog"
@@ -168,6 +216,15 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
           onRequestLocation={onRequestLocation}
           onResetLocation={onResetLocation}
           onSelectClimb={onSelectClimb}
+          recordingStatus={recordingStatus}
+          recordingStats={recordingStats}
+          recordingError={recordingError}
+          recordingSupported={recordingSupported}
+          onStartRecording={onStartRecording}
+          onPauseRecording={onPauseRecording}
+          onResumeRecording={onResumeRecording}
+          onStopRecording={onStopRecording}
+          onDismissRecordingError={onDismissRecordingError}
           onExit={() => setRideMode(false)}
         />
       </div>
@@ -181,7 +238,7 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
     <div
       className={[
         'bottom-sheet',
-        'fixed inset-x-0 bottom-0 z-30',
+        'absolute bottom-0 left-0 right-0 z-30',
         'flex flex-col rounded-t-2xl border-t border-white/10 bg-ink-800/95',
         'shadow-[0_-12px_40px_-12px_rgba(0,0,0,0.7)] backdrop-blur',
         'transition-[height] duration-300 ease-out',
@@ -243,17 +300,15 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {routes.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setRideMode(true)}
-              className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 px-2.5 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 active:scale-95"
-              aria-label="주행 모드 열기"
-            >
-              <Bike className="h-3.5 w-3.5" />
-              주행 모드
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setRideMode(true)}
+            className="inline-flex items-center gap-1 rounded-full bg-cyan-500/15 px-2.5 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 active:scale-95"
+            aria-label="주행 모드 열기"
+          >
+            <Bike className="h-3.5 w-3.5" />
+            주행 모드
+          </button>
           <button
             type="button"
             onClick={() =>
@@ -275,6 +330,28 @@ export function MobileBottomSheet(props: MobileBottomSheetProps) {
       <div className="flex-1 overflow-y-auto px-2 pb-[max(env(safe-area-inset-bottom),12px)]">
         {tab === 'routes' ? (
           <div className="space-y-3">
+            <RideRecorderPanel
+              status={recordingStatus}
+              isSupported={recordingSupported}
+              error={recordingError}
+              onStart={onStartRecording}
+              onPause={onPauseRecording}
+              onResume={onResumeRecording}
+              onStop={onStopRecording}
+              onDismissError={onDismissRecordingError}
+            />
+            <RecordingListPanel
+              recordings={recordings}
+              selectedRecordingId={selectedRecording?.id ?? null}
+              onSelect={onSelectRecording}
+              onAnalyze={onAnalyzeRecording}
+              onRemove={onRemoveRecording}
+            />
+            <RecordingDetailPanel
+              recording={selectedRecording}
+              onAnalyze={onAnalyzeRecording}
+              onClose={onCloseRecordingDetail}
+            />
             <RouteListPanel
               routes={routes}
               activeRouteId={activeRouteId}

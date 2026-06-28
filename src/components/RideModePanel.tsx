@@ -5,7 +5,10 @@ import { Mountain, Route, X } from 'lucide-react';
 import type { LocationState } from '../types/location';
 import type { RouteClimb } from '../types/climb';
 import type { RouteState } from '../types/gpx';
+import type { RecordingStats, RecordingStatus } from '../types/recording';
 import { LocationStatus } from './LocationStatus';
+import { RecordingStatsPanel } from './RecordingStatsPanel';
+import { RideRecorderPanel } from './RideRecorderPanel';
 
 interface RideModePanelProps {
   activeRoute: RouteState | null;
@@ -16,6 +19,15 @@ interface RideModePanelProps {
   onRequestLocation: () => void;
   onResetLocation: () => void;
   onSelectClimb?: (climb: RouteClimb) => void;
+  recordingStatus: RecordingStatus;
+  recordingStats: RecordingStats;
+  recordingError: string | null;
+  recordingSupported: boolean;
+  onStartRecording: () => void | Promise<unknown>;
+  onPauseRecording: () => void | Promise<unknown>;
+  onResumeRecording: () => void | Promise<unknown>;
+  onStopRecording: () => void | Promise<unknown>;
+  onDismissRecordingError: () => void;
   onExit: () => void;
 }
 
@@ -28,6 +40,15 @@ export function RideModePanel({
   onRequestLocation,
   onResetLocation,
   onSelectClimb,
+  recordingStatus,
+  recordingStats,
+  recordingError,
+  recordingSupported,
+  onStartRecording,
+  onPauseRecording,
+  onResumeRecording,
+  onStopRecording,
+  onDismissRecordingError,
   onExit
 }: RideModePanelProps) {
   return (
@@ -44,6 +65,35 @@ export function RideModePanel({
         >
           <X className="h-4 w-4" />
         </button>
+      </div>
+
+      <div className="mt-1">
+        <RideRecorderPanel
+          status={recordingStatus}
+          isSupported={recordingSupported}
+          error={recordingError}
+          onStart={onStartRecording}
+          onPause={onPauseRecording}
+          onResume={onResumeRecording}
+          onStop={onStopRecording}
+          onDismissError={onDismissRecordingError}
+        />
+      </div>
+
+      <div className="mt-4">
+        <RecordingStatsPanel
+          stats={recordingStats}
+          status={recordingStatus}
+        />
+      </div>
+
+      <div className="mt-4">
+        <LocationStatus
+          state={locationState}
+          onRequest={onRequestLocation}
+          onReset={onResetLocation}
+          offRouteMeters={offRouteMeters}
+        />
       </div>
 
       {activeRoute ? (
@@ -63,15 +113,6 @@ export function RideModePanel({
             <span className="ml-3 pb-1.5 text-xs text-zinc-500">
               · 고도 {activeRoute.route.minElevation.toFixed(0)}–{activeRoute.route.maxElevation.toFixed(0)}m
             </span>
-          </div>
-
-          <div className="mt-4">
-            <LocationStatus
-              state={locationState}
-              onRequest={onRequestLocation}
-              onReset={onResetLocation}
-              offRouteMeters={offRouteMeters}
-            />
           </div>
 
           <div className="mt-5">
@@ -118,9 +159,9 @@ export function RideModePanel({
           </div>
         </>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
+        <div className="mt-6 flex flex-1 flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
           <Route className="h-6 w-6 text-zinc-600" />
-          <p>주행할 경로를 먼저 선택하거나 업로드해 주세요.</p>
+          <p>경로 없이도 라이딩을 기록할 수 있습니다. GPX를 올리면 경로 이탈과 오르막 분석도 함께 볼 수 있습니다.</p>
         </div>
       )}
     </div>

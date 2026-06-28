@@ -138,6 +138,10 @@ export async function parseGpxFile(file: File): Promise<ParsedRoute> {
   }
 
   const text = await readFileAsText(file);
+  return parseGpxText(text, file.name);
+ }
+
+export function parseGpxText(text: string, fileName: string): ParsedRoute {
   if (!text || text.trim().length === 0) {
     throw new GpxParseError('비어 있는 파일은 파싱할 수 없습니다.');
   }
@@ -160,5 +164,5 @@ export async function parseGpxFile(file: File): Promise<ParsedRoute> {
     throw new GpxParseError('표시할 경로 데이터가 없습니다.');
   }
 
-  return buildRouteMetadata(file.name, coordinates);
+  return buildRouteMetadata(fileName, coordinates);
 }

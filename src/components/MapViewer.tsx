@@ -12,6 +12,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { RouteState } from '../types/gpx';
 import type { UserLocation } from '../types/location';
+import type { RecordedPoint } from '../types/recording';
 
 // Leaflet 기본 마커 아이콘 (Vite 환경에서 깨지는 문제) 해결을 위해
 // CDN 의 아이콘 URL 을 명시적으로 지정한다.
@@ -43,6 +44,9 @@ interface MapViewerProps {
   userLocation?: UserLocation | null;
   /** "내 위치로 이동" 트리거 (값이 바뀌면 flyTo) */
   panToUserTrigger?: number;
+  /** invalidateSize 트리거 (하단 시트 상태 변경 등으로 값이 바뀌면 호출) */
+  resizeTrigger?: number;
+  recordedPoints?: RecordedPoint[];
 }
 
 /**
@@ -96,13 +100,70 @@ function PanToUser({ location, trigger }: { location: UserLocation | null; trigg
   return null;
 }
 
+/**
+ * map.invalidateSize() 를 적절한 타이밍에 호출하여
+ * 모바일 WebView / 브라우저에서 컨테이너 크기 변화 후 지도가 정상 렌더링되도록 한다.
+ * - mount 후 지연 호출 (레이아웃 안정화 대기)
+ * - window resize / orientationchange 이벤트
+ * - resizeTrigger 변경 (하단 시트 상태 변경)
+ * - activeRouteId 변경 (경로 전환 시 컨테이너 변형 가능성)
+ */
+function MapResizer({
+  trigger,
+  activeRouteId
+}: {
+  trigger: number;
+  activeRouteId: string | null;
+}) {
+  const map = useMap();
+
+  // mount 후 지연 invalidateSize
+  useEffect(() => {
+    const t = setTimeout(() => map.invalidateSize(), 120);
+    return () => clearTimeout(t);
+  }, [map]);
+
+  // resize / orientationchange 이벤트 (디바운스)
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => map.invalidateSize(), 150);
+    };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  }, [map]);
+
+  // 하단 시트 상태 변경 → 시트 transition(300ms) 완료 후 invalidateSize
+  useEffect(() => {
+    if (trigger === 0) return;
+    const t = setTimeout(() => map.invalidateSize(), 320);
+    return () => clearTimeout(t);
+  }, [map, trigger]);
+
+  // 활성 경로 변경 시 invalidateSize
+  useEffect(() => {
+    const t = setTimeout(() => map.invalidateSize(), 200);
+    return () => clearTimeout(t);
+  }, [map, activeRouteId]);
+
+  return null;
+}
+
 export function MapViewer({
   routes,
   activeRouteId = null,
   highlightRange = null,
   fitAllTrigger = 0,
   userLocation = null,
-  panToUserTrigger = 0
+  panToUserTrigger = 0,
+  resizeTrigger = 0,
+  recordedPoints = []
 }: MapViewerProps) {
   const defaultCenter: [number, number] = [37.5665, 126.978];
   const defaultZoom = 7;
@@ -136,6 +197,11 @@ export function MapViewer({
       })
       .filter((x): x is { id: string; color: string; positions: [number, number][] } => x !== null);
   }, [visibleRoutes, highlightRange]);
+
+  const recordedPositions = useMemo(
+    () => recordedPoints.map((point) => [point.lat, point.lng] as [number, number]),
+    [recordedPoints]
+  );
 
   return (
     <div className="map-shell relative h-full w-full overflow-hidden rounded-2xl border border-white/10 bg-ink-700">
@@ -182,6 +248,20 @@ export function MapViewer({
             }}
           />
         ))}
+
+        {recordedPositions.length > 1 ? (
+          <Polyline
+            positions={recordedPositions}
+            pathOptions={{
+              color: '#22D3EE',
+              weight: 5,
+              opacity: 0.95,
+              lineCap: 'round',
+              lineJoin: 'round',
+              dashArray: '10 8'
+            }}
+          />
+        ) : null}
 
         {activeRoute
           ? (() => {
@@ -241,6 +321,7 @@ export function MapViewer({
         <FitBoundsOnRoutes routes={routes} trigger={fitAllTrigger} />
         <PanToRoute route={activeRoute} />
         <PanToUser location={userLocation ?? null} trigger={panToUserTrigger} />
+        <MapResizer trigger={resizeTrigger} activeRouteId={activeRouteId} />
 
         {userLocation ? (
           <>
@@ -279,7 +360,7 @@ export function MapViewer({
         ) : null}
       </MapContainer>
 
-      {routes.length === 0 ? (
+      {routes.length === 0 && recordedPoints.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-ink-900/40 px-4">
           <div className="pointer-events-auto max-w-xs rounded-2xl border border-white/10 bg-ink-800/85 px-6 py-5 text-center backdrop-blur">
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent/15 text-accent">

@@ -13,6 +13,11 @@ import { MultiElevationProfile } from './components/MultiElevationProfile';
 import { SegmentComparePanel } from './components/SegmentComparePanel';
 import { ClimbList } from './components/ClimbList';
 import { LocationStatus } from './components/LocationStatus';
+import { RecordingDetailPanel } from './components/RecordingDetailPanel';
+import { RecordingListPanel } from './components/RecordingListPanel';
+import { useRecordingStats } from './hooks/useRecordingStats';
+import { useRideRecorder } from './hooks/useRideRecorder';
+import { useSavedRecordings } from './hooks/useSavedRecordings';
 import { useIsDesktop } from './hooks/useMediaQuery';
 import { useGeolocation } from './hooks/useGeolocation';
 import {
@@ -29,6 +34,8 @@ import {
   pickNextColor
 } from './utils/segmentUtils';
 import { detectClimbs } from './utils/climbUtils';
+import { parseGpxText } from './utils/gpxParser';
+import { rideRecordingToGpxXml } from './utils/gpxWriter';
 import { distanceToTrackMeters } from './utils/routeDistanceUtils';
 import type {
   ComparisonSelection,
@@ -41,6 +48,7 @@ import type {
   TrackPoint
 } from './types/gpx';
 import type { RouteClimb } from './types/climb';
+import type { RecordingMeta, RideRecording } from './types/recording';
 import { OFF_ROUTE_THRESHOLD_METERS } from './constants/route';
 
 /**
@@ -62,8 +70,11 @@ export default function App() {
   const [fitAllTrigger, setFitAllTrigger] = useState(0);
   const [panToUserTrigger, setPanToUserTrigger] = useState(0);
   const [activeClimbId, setActiveClimbId] = useState<RouteId | null>(null);
+  const [sheetResizeTrigger, setSheetResizeTrigger] = useState(0);
   const isDesktop = useIsDesktop();
   const idCounterRef = useRef(0);
+  const routesRef = useRef<RouteState[]>([]);
+  const savedRecordings = useSavedRecordings();
   const { state: locationState, request: requestLocation, reset: resetLocation } =
     useGeolocation();
 
@@ -94,6 +105,106 @@ export default function App() {
     []
   );
 
+  const handleRecordingFinished = useCallback(
+    async ({
+      recording,
+      gpxXml
+    }: {
+      recording: RideRecording;
+      gpxXml: string;
+    }) => {
+      const parsed = parseGpxText(gpxXml, recording.fileName);
+      const prevRoutes = routesRef.current;
+      const usedColors = prevRoutes.map((route) => route.color);
+      const nextRoute = buildRouteState(parsed, prevRoutes.length);
+      nextRoute.name = recording.name;
+      nextRoute.color = pickNextColor(usedColors);
+      const nextRoutes = [...prevRoutes, nextRoute];
+      routesRef.current = nextRoutes;
+      setRoutes(nextRoutes);
+      setActiveRouteId(nextRoute.id);
+      setSelection(null);
+      setActiveClimbId(null);
+      setError(null);
+      const savedWithRoute = {
+        ...recording,
+        analyzedRouteId: nextRoute.id,
+        updatedAt: Date.now()
+      };
+      await savedRecordings.save(savedWithRoute);
+      return nextRoute.id;
+    },
+    [buildRouteState, savedRecordings]
+  );
+
+  const appendRecordedRoute = useCallback(
+    (recording: Pick<RideRecording, 'fileName' | 'name'>, gpxXml: string) => {
+      const parsed = parseGpxText(gpxXml, recording.fileName);
+      const prevRoutes = routesRef.current;
+      const usedColors = prevRoutes.map((route) => route.color);
+      const nextRoute = buildRouteState(parsed, prevRoutes.length);
+      nextRoute.name = recording.name;
+      nextRoute.color = pickNextColor(usedColors);
+      const nextRoutes = [...prevRoutes, nextRoute];
+      routesRef.current = nextRoutes;
+      setRoutes(nextRoutes);
+      setActiveRouteId(nextRoute.id);
+      setSelection(null);
+      setActiveClimbId(null);
+      setError(null);
+      return nextRoute.id;
+    },
+    [buildRouteState]
+  );
+
+  const rideRecorder = useRideRecorder({
+    onRecordingFinished: handleRecordingFinished
+  });
+  const recordingStats = useRecordingStats(rideRecorder.session, rideRecorder.status);
+
+  const handleSelectSavedRecording = useCallback(
+    async (recordingId: string) => {
+      await savedRecordings.select(recordingId);
+    },
+    [savedRecordings]
+  );
+
+  const handleCloseSavedRecordingDetail = useCallback(() => {
+    savedRecordings.clearSelection();
+  }, [savedRecordings]);
+
+  const handleAnalyzeRecording = useCallback(
+    async (recordingId: string) => {
+      const recording =
+        savedRecordings.selectedRecording?.id === recordingId
+          ? savedRecordings.selectedRecording
+          : await savedRecordings.select(recordingId);
+      if (!recording) return;
+      const gpxXml = rideRecordingToGpxXml(recording);
+      const nextRouteId = appendRecordedRoute(recording, gpxXml);
+      await savedRecordings.save({
+        id: recording.id,
+        name: recording.name,
+        fileName: recording.fileName,
+        status: 'finished',
+        startedAt: recording.startedAt,
+        endedAt: recording.endedAt,
+        elapsedMs: recording.elapsedMs,
+        pausedDurationMs: recording.pausedDurationMs,
+        totalDistanceKm: recording.totalDistanceKm,
+        totalElevationGainM: recording.totalElevationGainM,
+        averageSpeedKph: recording.averageSpeedKph,
+        maxSpeedKph: recording.maxSpeedKph,
+        createdAt: recording.createdAt,
+        updatedAt: Date.now(),
+        points: recording.points,
+        analyzedRouteId: nextRouteId
+      });
+      await savedRecordings.select(recordingId);
+    },
+    [appendRecordedRoute, savedRecordings]
+  );
+
   const appendRoutes = useCallback(
     (parsedList: ParsedRoute[], opts: { replace?: boolean } = {}) => {
       if (parsedList.length === 0) return;
@@ -109,7 +220,9 @@ export default function App() {
         if (next.length > 0 && next[0]) {
           setActiveRouteId((prevActive) => prevActive ?? next[0].id);
         }
-        return opts.replace ? next : [...prev, ...next];
+        const merged = opts.replace ? next : [...prev, ...next];
+        routesRef.current = merged;
+        return merged;
       });
       setError(null);
       setSelection(null);
@@ -156,21 +269,29 @@ export default function App() {
   }, []);
 
   const handleRemove = useCallback((id: RouteId) => {
-    setRoutes((prev) => prev.filter((r) => r.id !== id));
+    setRoutes((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      routesRef.current = next;
+      return next;
+    });
     setActiveRouteId((prev) => (prev === id ? null : prev));
     setActiveClimbId((prev) => (prev === id ? null : prev));
   }, []);
 
   const handleRename = useCallback((id: RouteId, name: string) => {
-    setRoutes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, name } : r))
-    );
+    setRoutes((prev) => {
+      const next = prev.map((r) => (r.id === id ? { ...r, name } : r));
+      routesRef.current = next;
+      return next;
+    });
   }, []);
 
   const handleRecolor = useCallback((id: RouteId, color: string) => {
-    setRoutes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, color } : r))
-    );
+    setRoutes((prev) => {
+      const next = prev.map((r) => (r.id === id ? { ...r, color } : r));
+      routesRef.current = next;
+      return next;
+    });
   }, []);
 
   const handleFitAll = useCallback(() => {
@@ -188,6 +309,10 @@ export default function App() {
   }, []);
 
   // 모든 경로가 사라지면 active 도 정리
+  useEffect(() => {
+    routesRef.current = routes;
+  }, [routes]);
+
   useEffect(() => {
     if (routes.length === 0 && activeRouteId !== null) {
       setActiveRouteId(null);
@@ -273,16 +398,32 @@ export default function App() {
     setComparison(s);
   }, []);
 
+  const effectiveUserLocation = rideRecorder.liveLocation ?? locationState.location;
+
+  const effectiveLocationState = useMemo(
+    () =>
+      rideRecorder.liveLocation
+        ? {
+            ...locationState,
+            status: 'ready' as const,
+            permission: 'granted' as const,
+            location: rideRecorder.liveLocation,
+            message: null
+          }
+        : locationState,
+    [rideRecorder.liveLocation, locationState]
+  );
+
   // ===== 경로 이탈 거리 =====
   const offRouteMeters = useMemo<number | null>(() => {
-    if (!locationState.location) return null;
+    if (!effectiveUserLocation) return null;
     if (!activeRoute) return null;
     if (activeRoute.trackPoints.length === 0) return null;
-    return distanceToTrackMeters(locationState.location, activeRoute.trackPoints);
-  }, [locationState.location, activeRoute]);
+    return distanceToTrackMeters(effectiveUserLocation, activeRoute.trackPoints);
+  }, [effectiveUserLocation, activeRoute]);
 
   return (
-    <div className="relative flex h-dvh min-h-[600px] w-full flex-col bg-ink-900 text-zinc-100">
+    <div className="relative flex h-[100dvh] min-h-[100dvh] w-full flex-col bg-ink-900 text-zinc-100">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(249,115,22,0.08),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(34,211,238,0.06),transparent_55%)]"
@@ -374,21 +515,28 @@ export default function App() {
           onPanToUser={handlePanToUser}
           panToUserTrigger={panToUserTrigger}
           offRouteMeters={offRouteMeters}
+          recordings={savedRecordings.metas}
+          selectedRecording={savedRecordings.selectedRecording}
+          onSelectRecording={handleSelectSavedRecording}
+          onAnalyzeRecording={handleAnalyzeRecording}
+          onRemoveRecording={savedRecordings.remove}
+          onCloseRecordingDetail={handleCloseSavedRecordingDetail}
         />
       ) : (
         <>
-          <main className="relative z-10 flex flex-1 flex-col overflow-hidden p-2 pb-0">
-            <section className="h-full min-h-[300px] flex-1">
-              <MapViewer
-                routes={routes}
-                activeRouteId={activeRouteId}
-                highlightRange={comparison}
-                fitAllTrigger={fitAllTrigger}
-                userLocation={locationState.location}
-                panToUserTrigger={panToUserTrigger}
-              />
-            </section>
-          </main>
+          {/* 모바일: 지도를 전체 화면 absolute 로 깔고, 하단 시트를 overlay 로 띄움 */}
+          <div className="absolute inset-0 z-10">
+            <MapViewer
+              routes={routes}
+              activeRouteId={activeRouteId}
+              highlightRange={comparison}
+              fitAllTrigger={fitAllTrigger}
+              userLocation={effectiveUserLocation}
+              panToUserTrigger={panToUserTrigger}
+              recordedPoints={rideRecorder.session?.points ?? []}
+              resizeTrigger={sheetResizeTrigger}
+            />
+          </div>
           <MobileBottomSheet
             routes={routes}
             activeRouteId={activeRouteId}
@@ -411,12 +559,28 @@ export default function App() {
             climbs={activeClimbs}
             activeClimbId={activeClimbId}
             onSelectClimb={handleSelectClimb}
-            locationState={locationState}
+            locationState={effectiveLocationState}
             onRequestLocation={requestLocation}
             onResetLocation={resetLocation}
             panToUserTrigger={panToUserTrigger}
             offRouteMeters={offRouteMeters}
-            userLocation={locationState.location}
+            userLocation={effectiveUserLocation}
+            recordings={savedRecordings.metas}
+            selectedRecording={savedRecordings.selectedRecording}
+            recordingStatus={rideRecorder.status}
+            recordingStats={recordingStats}
+            recordingError={rideRecorder.error}
+            recordingSupported={rideRecorder.isSupported}
+            onStartRecording={rideRecorder.start}
+            onPauseRecording={rideRecorder.pause}
+            onResumeRecording={rideRecorder.resume}
+            onStopRecording={rideRecorder.stop}
+            onDismissRecordingError={rideRecorder.dismissError}
+            onSelectRecording={handleSelectSavedRecording}
+            onAnalyzeRecording={handleAnalyzeRecording}
+            onRemoveRecording={savedRecordings.remove}
+            onCloseRecordingDetail={handleCloseSavedRecordingDetail}
+            onResizeTrigger={() => setSheetResizeTrigger((t) => t + 1)}
           />
         </>
       )}
@@ -432,6 +596,8 @@ interface DesktopLayoutProps {
   routes: RouteState[];
   activeRouteId: RouteId | null;
   activeRoute: RouteState | null;
+  recordings: RecordingMeta[];
+  selectedRecording: RideRecording | null;
   activeTrackPoints: TrackPoint[];
   activeElevationPoints: ElevationPoint[];
   activeSegments: RouteSegment[];
@@ -461,6 +627,10 @@ interface DesktopLayoutProps {
   onPanToUser?: () => void;
   panToUserTrigger: number;
   offRouteMeters: number | null;
+  onSelectRecording: (id: string) => void | Promise<unknown>;
+  onAnalyzeRecording: (id: string) => void | Promise<unknown>;
+  onRemoveRecording: (id: string) => void | Promise<unknown>;
+  onCloseRecordingDetail: () => void;
 }
 
 function DesktopLayout(props: DesktopLayoutProps) {
@@ -468,6 +638,8 @@ function DesktopLayout(props: DesktopLayoutProps) {
     routes,
     activeRouteId,
     activeRoute,
+    recordings,
+    selectedRecording,
     activeTrackPoints,
     activeElevationPoints,
     activeSegments,
@@ -495,7 +667,11 @@ function DesktopLayout(props: DesktopLayoutProps) {
     onRequestLocation,
     onResetLocation,
     panToUserTrigger,
-    offRouteMeters
+    offRouteMeters,
+    onSelectRecording,
+    onAnalyzeRecording,
+    onRemoveRecording,
+    onCloseRecordingDetail
   } = props;
 
   return (
@@ -511,6 +687,18 @@ function DesktopLayout(props: DesktopLayoutProps) {
           onRename={onRename}
           onRecolor={onRecolor}
           onFitAll={onFitAll}
+        />
+        <RecordingListPanel
+          recordings={recordings}
+          selectedRecordingId={selectedRecording?.id ?? null}
+          onSelect={onSelectRecording}
+          onAnalyze={onAnalyzeRecording}
+          onRemove={onRemoveRecording}
+        />
+        <RecordingDetailPanel
+          recording={selectedRecording}
+          onAnalyze={onAnalyzeRecording}
+          onClose={onCloseRecordingDetail}
         />
         {activeRoute ? (
           <>
