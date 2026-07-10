@@ -37,7 +37,7 @@ export function buildGpxFromRecording(recording: RideRecording): string {
     .join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="nuni gpx뷰어" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="nuni track" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
     <name>${escapeXml(recording.name)}</name>
     <time>${new Date(recording.startedAt).toISOString()}</time>

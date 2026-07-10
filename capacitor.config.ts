@@ -11,7 +11,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'kr.co.nuni.gpxviewer',
-  appName: 'GPX Viewer',
+  appName: 'nuni track',
   webDir: 'dist'
 };
 

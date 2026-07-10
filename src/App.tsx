@@ -442,7 +442,7 @@ export default function App() {
           />
           <div className="min-w-0">
             <h1 className="font-display text-base font-semibold leading-tight text-zinc-50 md:text-lg">
-              nuni gpx뷰어
+              nuni track
             </h1>
             <p className="hidden text-xs text-zinc-400 md:block">
               {routes.length > 0

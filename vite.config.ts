@@ -24,8 +24,8 @@ export default defineConfig(({ mode }) => ({
       ],
       manifest: {
         id: '/',
-        name: 'nuni gpx뷰어',
-        short_name: 'nuni gpx뷰어',
+        name: 'nuni track',
+        short_name: 'nuni track',
         description: '자전거 라이더를 위한 브라우저 기반 GPX 뷰어. 고도 분석, 오르막 자동 탐지, 다중 경로 비교, 주행 모드를 제공합니다.',
         theme_color: '#0F1419',
         background_color: '#0F1419',

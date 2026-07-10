@@ -1,11 +1,11 @@
-# nuni gpx뷰어
+# nuni track
 
 자전거 라이더를 위한 브라우저 기반 GPX 뷰어.
 **GPX 파일은 서버로 절대 업로드되지 않으며, 모든 분석은 브라우저 안에서만** 처리됩니다.
 
 ## 로고 / 브랜딩
 
-- 공식 이름: **nuni gpx뷰어**
+- 공식 이름: **nuni track**
 - 로고: `public/nuni_logo_v1.0.png` (PNG 원본, **SVG 변환하지 않음**)
   - 브라우저 헤더의 `<img class="app-logo">` 로 표시
   - favicon, apple-touch-icon, PWA manifest icons 모두 동일 PNG 파일 참조
